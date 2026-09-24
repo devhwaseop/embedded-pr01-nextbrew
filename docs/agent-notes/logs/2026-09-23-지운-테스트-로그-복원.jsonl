@@ -1,0 +1,23 @@
+{"at": "06:31:38.793", "ev": "app.start", "data": {"version": "0.2.0-dev", "mode": "local", "online": true, "firebase": false}, "src": "transcript row 879"}
+{"at": "06:31:38.822", "ev": "error", "data": {"message": "서비스 워커 등록 실패: Failed to register a ServiceWorker for scope ('http://localhost:8765/') with script ('http://localhost:8765/sw.js'): An unknown error occurred when fetching the script.", "where": "sw"}, "src": "transcript row 879"}
+{"at": "06:32:34.122", "ev": "grinder.save", "data": {"grinderId": "grinder_mudq7d2bxv9jz3", "name": "K6 테스트", "zeroOffset": -3}, "src": "transcript row 879"}
+{"at": "06:32:34.680", "ev": "bean.save", "data": {"beanId": "bean_mudq7d809fnjd9", "name": "테스트 원두"}, "src": "transcript row 879"}
+{"at": "06:32:46.004", "ev": "brew.start", "data": {"recipeId": "kurasu-japanese-iced", "doseG": 16, "hotWaterG": 150, "iceG": 70, "dripper": "Hario V60 02"}, "src": "transcript row 879"}
+{"at": "06:32:46.010", "ev": "wakelock.fail", "data": {"reason": "NotAllowedError: Wake Lock permission request denied"}, "src": "transcript row 879"}
+{"at": "06:33:04.866", "ev": "app.start", "data": {"version": "0.2.0-dev", "mode": "local", "online": true, "firebase": false}, "src": "transcript row 879"}
+{"at": "06:33:04.867", "ev": "brew.resume", "data": {"stepIndex": 0, "elapsedSec": 45}, "src": "transcript row 879"}
+{"at": "06:33:04.869", "ev": "wakelock.fail", "data": {"reason": "NotAllowedError: Wake Lock permission request denied"}, "src": "transcript row 879"}
+{"at": "06:33:04.871", "ev": "error", "data": {"message": "서비스 워커 등록 실패: (위와 같음)", "where": "sw"}, "src": "transcript row 879"}
+{"at": "06:33:07.178", "ev": "brew.step", "data": {"from": "뜸 들이기", "to": "1차 푸어", "plannedSec": 40, "actualSec": 47.4, "deltaSec": 7.4}, "src": "transcript row 879"}
+{"at": "06:33:08.245", "ev": "brew.step", "data": {"from": "1차 푸어", "to": "2차 푸어", "plannedSec": 70, "actualSec": 48.4, "deltaSec": -21.6}, "src": "transcript row 879"}
+{"at": "06:33:09.445", "ev": "brew.end", "data": {"totalSec": 49.6, "plannedTotalSec": 130, "deltaSec": -80.4}, "src": "transcript row 879"}
+{"at": "06:33:09.446", "ev": "brew.saved", "data": {"where": "local"}, "src": "transcript row 879"}
+{"at": null, "ev": "result.update", "data": {"field": "endState", "value": "다 빠짐"}, "src": "transcript row 902", "note": "06:33:19~06:34:13 사이(시각 미기록)"}
+{"at": null, "ev": "result.update", "data": {"field": "actualWaterG", "value": 150}, "src": "transcript row 902", "note": "06:33:19~06:34:13 사이(시각 미기록)"}
+{"at": null, "ev": "result.update", "data": {"field": "actualWaterG", "value": 155}, "src": "transcript row 902", "note": "06:33:19~06:34:13 사이(시각 미기록)"}
+{"at": null, "ev": "survey.save", "data": {"answered": 3, "skipped": 2, "share": false}, "src": "transcript row 902", "note": "06:33:19~06:34:13 사이(시각 미기록)"}
+{"at": null, "ev": "brew.start", "data": {"recipeId": "kurasu-japanese-iced", "doseG": 16, "hotWaterG": 150, "iceG": 70, "dripper": "Hario V60 02"}, "src": "transcript row 918", "note": "취소 시험 추출의 시작, 06:34:46 직전"}
+{"at": null, "ev": "brew.step", "data": {"from": "뜸 들이기", "to": "1차 푸어", "plannedSec": 40, "actualSec": 0.8, "deltaSec": -39.2}, "src": "transcript row 918", "note": "06:34:46 직전"}
+{"at": "06:34:46", "ev": "brew.cancel", "data": {"recipeId": "kurasu-japanese-iced", "stepIndex": 1, "stepLabel": "1차 푸어", "elapsedSec": 1.2}, "src": "transcript row 1179"}
+{"at": "10:28:19", "ev": "app.start", "data": {"version": "0.2.0-dev", "mode": "local", "online": true, "firebase": true}, "src": "transcript row 1179"}
+{"at": "10:28:20", "ev": "error", "data": {"message": "서비스 워커 등록 실패 (원문 잘림)", "where": "sw"}, "src": "transcript row 1179"}
