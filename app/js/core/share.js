@@ -8,6 +8,7 @@ import { APP_NAME } from './export.js';
 import { beanKey } from './diff.js';
 import { conditionRows, stepRows, surveyRows } from './facts.js';
 import { WORDS } from './words.js';
+import { formatRatio } from './recipe.js';
 
 export const SHARE_ROLES = {
   current: '이번 추출',
@@ -132,7 +133,7 @@ export function toMarkdown(pkg) {
   for (const r of Object.values(pkg.recipes)) {
     out.push(`## 레시피 · ${r.name}`, '');
     if (r.source?.url) out.push(`- 출처: ${r.source.url}`);
-    out.push(`- 기준: 원두 ${r.refDoseG}g · 뜨거운 물 ${Math.round(r.refDoseG * r.waterRatio)}g · ${r.tempC}℃${r.iceRatio ? ` · 얼음 ${Math.round(r.refDoseG * r.iceRatio)}g` : ''}`);
+    out.push(`- 기준: 원두 ${r.refDoseG}g · 뜨거운 물 ${Math.round(r.refDoseG * r.waterRatio)}g · ${WORDS.ratio.label} ${formatRatio(r.waterRatio)} · ${r.tempC}℃${r.iceRatio ? ` · 얼음 ${Math.round(r.refDoseG * r.iceRatio)}g` : ''}`);
     if (r.grindNote) out.push(`- 분쇄: ${r.grindNote}`);
     for (const t of r.pourTips ?? []) out.push(`- ${t}`);
     out.push('', table(['단계', '시작', `${WORDS.target.label}(기준 원두량)`], r.steps.map((s, i) => [s.label, formatSec(s.startSec), `${i === r.steps.length - 1 ? Math.round(r.refDoseG * r.waterRatio) : Math.round(r.refDoseG * r.waterRatio * s.cumPct)}g`])), '');
@@ -147,6 +148,7 @@ export function toMarkdown(pkg) {
       ['생산자', bean.producer],
       ['품종', bean.variety],
       ['가공', bean.process],
+      ['배전도', bean.roast],
       ['노트', (bean.notes ?? []).join(', ')],
       ['메모', bean.memo],
     ].filter(([, v]) => v);

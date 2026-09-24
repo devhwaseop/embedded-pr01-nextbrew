@@ -146,7 +146,7 @@ function createStore() {
       return this.list('brews').sort((a, b) => (b.timer?.startedAt ?? 0) - (a.timer?.startedAt ?? 0));
     },
     settings() {
-      return { includeLogsInExport: false, shareFormat: 'md', shareScope: 'with', ...settings };
+      return { includeLogsInExport: false, shareFormat: 'md', shareScope: 'with', showSubs: true, ...settings };
     },
     setSetting(k, v) {
       settings = { ...settings, [k]: v };

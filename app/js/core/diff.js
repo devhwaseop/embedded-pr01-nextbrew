@@ -56,7 +56,7 @@ const ratio = (b) => `1:${Math.round((water(b) / b.conditions.doseG) * 10) / 10}
 const grind = (b) => {
   const g = b.conditions.grind;
   if (!g || g.dial == null) return '—';
-  return `${g.grinderName ? `${g.grinderName} ` : ''}${formatGrind(g.dial, g.zeroOffset)} (실제 ${grindActual(g.dial, g.zeroOffset)}${g.um != null ? ` · 참고 약 ${g.um}µm` : ''})`;
+  return `${g.grinderName ? `${g.grinderName} ` : ''}${formatGrind(g.dial, g.zeroOffset)} (실제 ${grindActual(g.dial, g.zeroOffset)}${g.um != null ? ` · 참고 약 ${g.um}µm${g.umSd != null ? ` ±${g.umSd}` : ''}` : ''})`;
 };
 const level = (words, v) => (v == null ? '선택 안 함' : words[v - 1]);
 
@@ -73,7 +73,7 @@ export function sideBySide(cur, prev) {
   rows.push(row(C, '원두량', show(cur.conditions.doseG, 'g'), show(prev.conditions.doseG, 'g')));
   rows.push(row(C, '뜨거운 물', show(water(cur), 'g'), show(water(prev), 'g')));
   rows.push(row(C, '얼음', cur.conditions.style === 'hot' ? '핫' : show(cur.conditions.iceG, 'g'), prev.conditions.style === 'hot' ? '핫' : show(prev.conditions.iceG, 'g')));
-  rows.push(row(C, '비율', ratio(cur), ratio(prev)));
+  rows.push(wrow(C, WORDS.ratio, ratio(cur), ratio(prev)));
   rows.push(row(C, '온도', show(cur.conditions.tempC, '℃'), show(prev.conditions.tempC, '℃')));
   rows.push(row(C, WORDS.grind.label, grind(cur), grind(prev)));
   rows.push(row(C, '드리퍼', show(cur.conditions.dripper), show(prev.conditions.dripper)));

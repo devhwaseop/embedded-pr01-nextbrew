@@ -98,6 +98,8 @@ export const DRIPPERS = ['Hario V60 02', 'Hario V60 MUGEN 02'];
 export const FILTERS = ['표백 종이 필터', '무표백 종이 필터'];
 export const POUR_METHODS = ['나선형', '센터 푸어', '원 푸어'];
 export const PROCESS_TYPES = ['워시드', '내추럴']; // SCA 외재적 평가 양식의 유형. 그 밖은 직접 입력.
+// 배전도(선택, 사용자 결정 9/24 — 언스페셜티 브루잉 가이드의 배전도 구분 참고). 다음 추출 제안에서 강배전의 쓴맛을 한 단계 낮춰 본다.
+export const ROASTS = ['약배전', '중배전', '강배전'];
 // 종료 상태는 key 로 저장한다. 화면 단어는 core/words.js END_STATE_WORDS.
 export const END_STATES = ['drained', 'cutoff'];
 // AI 공유 파일 형식. 기본값은 설정에서 고른다(처음 값 = md: AI에게 묻는 용도가 기본이라서).
@@ -156,7 +158,8 @@ export function createBean(fields = {}, now = Date.now()) {
     producer: '', // 농장·생산자
     variety: '', // 품종
     process: '', // 가공 방식
-    notes: [], // 원두 봉투에 적힌 노트
+    roast: '', // 배전도(ROASTS 중 하나, 선택)
+    notes: [], // 로스터리가 표기한 노트
     memo: '',
     ...fields,
     updatedAt: new Date(now).toISOString(),
@@ -189,6 +192,7 @@ export function createGrinder(fields = {}, now = Date.now()) {
     id: fields.id ?? newId('grinder', now),
     name: '',
     zeroOffset: 0,
+    umPerClick: null, // 한 클릭에 분쇄가 몇 µm 바뀌나(선택). 비우면 기록의 참고 µm 로 추정한다(core/compass.js)
     ...fields,
     updatedAt: new Date(now).toISOString(),
   };

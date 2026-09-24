@@ -13,9 +13,11 @@ export function stepHint(recipe, index, customHints = null) {
   return { text: '', source: 'none' };
 }
 
-export function buildPlan(recipe, doseG, customHints = null) {
+// waterG = 뜨거운 물을 직접 정한 값(선택). 비우면 원두량 × 레시피 비율. 단계 목표 g 은 어느 쪽이든 같은 % 로 나눈다.
+// (준비 화면에서 원두량·뜨거운 물·비율을 다 조정할 수 있게 — 9/24. 화면은 비율을 저장하고 원두량 × 비율을 여기로 넘긴다)
+export function buildPlan(recipe, doseG, customHints = null, { waterG = null } = {}) {
   const dose = Number(doseG) || recipe.refDoseG;
-  const hotWaterG = Math.round(dose * recipe.waterRatio);
+  const hotWaterG = waterG != null ? Math.round(waterG) : Math.round(dose * recipe.waterRatio);
   const iceG = Math.round(dose * (recipe.iceRatio ?? 0));
   const steps = recipe.steps.map((s, i) => ({
     index: i,
@@ -40,7 +42,13 @@ export function buildPlan(recipe, doseG, customHints = null) {
     ratioHot: hotWaterG / dose,
     ratioTotal: (hotWaterG + iceG) / dose,
     isRefDose: dose === recipe.refDoseG,
+    waterFixed: waterG != null,
   };
+}
+
+// 레시피 태그(사용자 결정 9/24 — 언스페셜티 레시피 목록의 태그 참고): 핫/아이스 · 드리퍼 · 붓는 횟수(뜸 포함)
+export function recipeTags(recipe) {
+  return [recipe.style === 'iced' ? '아이스' : '핫', recipe.designedFor, `${recipe.steps.length}번 붓기`].filter(Boolean);
 }
 
 // 기준 원두량과 다를 때 «방향»만 알려준다. 단일 값은 내지 않는다(사용자 결정 9/23).

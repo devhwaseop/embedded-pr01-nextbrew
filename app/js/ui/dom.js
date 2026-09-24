@@ -21,7 +21,7 @@ export function h(tag, props, ...children) {
 export function svg(tag, attrs = {}, ...children) {
   const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
   for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
-  el.append(...children);
+  el.append(...children.flat(Infinity).filter((c) => c != null && c !== false)); // h() 처럼 빈 자리는 건너뛴다(그래프의 조건부 요소)
   return el;
 }
 
@@ -39,8 +39,13 @@ export function field(label, control, hint) {
   return h('div', { class: 'field' }, h('div', { class: 'field-label' }, label), control, hint ? h('div', { class: 'hint' }, hint) : null);
 }
 
-// 숫자: − [입력] + (순서대로 올리고 내리기 + 직접 입력)
-export function stepper({ value, step = 1, min = 0, max = 9999, unit = '', onChange }) {
+// 작은 태그 묶음(레시피의 핫/아이스·드리퍼·붓는 횟수 등)
+export function tags(list) {
+  return h('div', { class: 'tags' }, ...list.map((t) => h('span', { class: 'tag' }, t)));
+}
+
+// 숫자: − [입력] + (순서대로 올리고 내리기 + 직접 입력). prefix = 입력칸 앞 표시(비율의 「1:」)
+export function stepper({ value, step = 1, min = 0, max = 9999, unit = '', prefix = '', onChange }) {
   const input = h('input', { type: 'number', inputMode: 'decimal', value: value ?? '', step, min, max, class: 'stepper-input' });
   const set = (v) => {
     if (v === '' || v == null || Number.isNaN(v)) {
@@ -58,6 +63,7 @@ export function stepper({ value, step = 1, min = 0, max = 9999, unit = '', onCha
     'div',
     { class: 'stepper' },
     h('button', { type: 'button', onClick: () => bump(-step), 'aria-label': '줄이기' }, '−'),
+    prefix ? h('span', { class: 'unit' }, prefix) : null,
     input,
     unit ? h('span', { class: 'unit' }, unit) : null,
     h('button', { type: 'button', onClick: () => bump(step), 'aria-label': '늘리기' }, '+'),
@@ -149,9 +155,21 @@ export function tagEditor({ options, selected, onChange, placeholder = '직접 �
 }
 
 // 켜고 끄는 스위치(선택 항목을 쓸지 말지). 속은 체크박스라 키보드·화면 읽기 프로그램에서도 그대로 동작한다.
-export function toggle({ checked, label, onChange }) {
-  const input = h('input', { type: 'checkbox', role: 'switch', checked: Boolean(checked), onChange: (e) => onChange(e.target.checked) });
-  return h('label', { class: 'switch' }, input, h('span', { class: 'switch-track', 'aria-hidden': 'true' }), h('span', null, label));
+// 모양(사용자 결정 9/24 — 백업 B안): 이름 한 줄 + 아래 옅은 설명, 스위치는 오른쪽 끝(Apple HIG 목록 행 · Material 3 목록 보조 설명).
+// sub = 문자열(늘 같은 설명) 또는 { on, off }(켜짐·꺼짐에 따라 바뀌는 설명 — Android setSummaryOn/Off 방식).
+export function toggle({ checked, label, sub = null, onChange }) {
+  const subText = (v) => (sub == null ? '' : typeof sub === 'string' ? sub : v ? sub.on : sub.off);
+  const subEl = sub == null ? null : h('span', { class: 'switch-sub' }, subText(checked));
+  const input = h('input', {
+    type: 'checkbox',
+    role: 'switch',
+    checked: Boolean(checked),
+    onChange: (e) => {
+      if (subEl) subEl.textContent = subText(e.target.checked);
+      onChange(e.target.checked);
+    },
+  });
+  return h('label', { class: 'switch' }, h('span', { class: 'switch-text' }, h('span', { class: 'switch-label' }, label), subEl), input, h('span', { class: 'switch-track', 'aria-hidden': 'true' }));
 }
 
 // 뗄 때 실행하는 버튼(사용자 결정 9/24 — W3C WCAG 2.5.2 Pointer Cancellation).

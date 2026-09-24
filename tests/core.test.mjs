@@ -14,6 +14,9 @@ import { suggestNotes } from '../app/js/core/suggest.js';
 import { buildExport, parseImport, mergeById } from '../app/js/core/export.js';
 import { createLocalAdapter, copyAll, localOnlyCounts } from '../app/js/core/store.js';
 import { findPreset } from '../app/js/data/presets.js';
+import { readCompass, adviseNext, estimateUmPerClick, umPerClickFor, lastSurveyed } from '../app/js/core/compass.js';
+import { planPoints, brewPlanPoints, brewActualPoints, planBars } from '../app/js/core/chart.js';
+import { recipeTags } from '../app/js/core/recipe.js';
 
 const KURASU = findPreset('kurasu-japanese-iced');
 
@@ -394,3 +397,100 @@ test('기기 저장 어댑터: 쓰고 다시 읽기, 로그는 순서대로 쌓�
   assert.equal(all.beans[0].name, '원두');
   assert.deepEqual((await ad.loadLogs()).map((e) => e.t), [1, 2]);
 });
+
+// ── 9/24 언스페셜티 후보(1~7·9) ─────────────────────────────
+function survey(patch = {}) {
+  const s = emptySurvey();
+  for (const [k, v] of Object.entries(patch.items ?? {})) s.items[k] = { ...s.items[k], ...v };
+  return { ...s, offFlavors: patch.offFlavors ?? [], liking: patch.liking ?? null };
+}
+
+test('컴퍼스: 시큼함 → 과소추출(가늘게), 쓴맛 매우 강함 → 과다추출 2단계(굵게)', () => {
+  const sour = readCompass(survey({ items: { acidity: { level: 3, kinds: ['시큼한'] } } }));
+  assert.equal(sour.extraction, -1);
+  assert.equal(adviseNext(sour).grindUm, -30);
+  assert.match(adviseNext(sour).lines[0], /30µm 가늘게/);
+  const bitter = readCompass(survey({ items: { bitterness: { level: 5 } } }));
+  assert.equal(bitter.extraction, 2);
+  assert.equal(adviseNext(bitter).grindUm, 60);
+});
+
+test('컴퍼스: 강배전은 쓴맛을 한 단계 낮춰 본다, 단맛이 약하면 같은 방향으로 한 단계 더', () => {
+  assert.equal(readCompass(survey({ items: { bitterness: { level: 4 } } }), { roast: '강배전' }).extraction, 0);
+  assert.equal(readCompass(survey({ items: { bitterness: { level: 5 } } }), { roast: '강배전' }).extraction, 1);
+  assert.equal(readCompass(survey({ items: { bitterness: { level: 4 }, sweetness: { level: 2 } } })).extraction, 2);
+  // 단맛만 약하면 방향을 못 정한다
+  assert.equal(readCompass(survey({ items: { sweetness: { level: 1 } } })).extraction, 0);
+});
+
+test('컴퍼스: 시큼함과 쓴맛이 함께면 분쇄를 움직이지 않고, 금속성 같은 잡미는 계산에서 뺀다', () => {
+  const c = readCompass(survey({ items: { acidity: { level: 3, kinds: ['시큼한'] }, bitterness: { level: 4 } }, offFlavors: ['Metallic (금속성)'] }));
+  assert.equal(c.mixed, true);
+  assert.equal(c.extraction, 0);
+  assert.deepEqual(c.taints, ['Metallic']);
+  const a = adviseNext(c);
+  assert.equal(a.keep, false);
+  assert.ok(a.lines.some((l) => l.includes('엇갈립니다')));
+  assert.ok(a.lines.some((l) => l.includes('Metallic')));
+});
+
+test('컴퍼스: 바디감 약함 → 연함 → 원두 0.5g 늘리기(물 그대로), 만족하고 단서가 없으면 유지', () => {
+  const weak = adviseNext(readCompass(survey({ items: { body: { level: 2 } } })));
+  assert.equal(weak.doseDeltaG, 0.5);
+  assert.match(weak.lines[0], /0.5g 늘리기 \(물은 그대로\)/);
+  const liked = adviseNext(readCompass(survey({ items: { body: { level: 3 } }, liking: 5 })));
+  assert.equal(liked.keep, true);
+  assert.match(liked.lines[0], /유지/);
+  assert.equal(adviseNext(readCompass(survey())), null, '아무것도 답하지 않으면 제안 없음');
+});
+
+test('클릭당 µm: 설정값이 먼저, 없으면 기록의 (실제 클릭, 참고 µm) 기울기로 추정 → 클릭 수 환산', () => {
+  const g = (dial, zeroOffset, um) => ({ conditions: { grind: { grinderId: 'k6', dial, zeroOffset, um } } });
+  // 실제 클릭 60 → 600µm, 70 → 700µm (영점이 달라도 실제 클릭으로 맞춘다)
+  const brews = [g(63, -3, 600), g(70, 0, 700), g(50, 0, null)];
+  assert.deepEqual(estimateUmPerClick(brews, 'k6'), { value: 10, n: 2 });
+  assert.equal(estimateUmPerClick([g(60, 0, 600)], 'k6'), null, '눈금이 하나뿐이면 추정 안 함');
+  assert.equal(umPerClickFor({ id: 'k6', umPerClick: 12 }, brews).source, 'manual');
+  assert.equal(umPerClickFor({ id: 'k6' }, brews).value, 10);
+  const a = adviseNext(readCompass(survey({ items: { acidity: { level: 4, kinds: ['시큼한'] } } })), { umPerClick: 10 });
+  assert.equal(a.grindUm, -60);
+  assert.equal(a.clicks, -6);
+  assert.match(a.lines[0], /약 6클릭 가늘게/);
+});
+
+test('지난번 제안: 같은 레시피(원두를 골랐으면 같은 원두)의 가장 최근 설문 기록', () => {
+  const b = (id, t, beanId, surveyed) => ({ id, recipe: { id: 'r' }, bean: beanId ? { id: beanId } : null, timer: { startedAt: t }, survey: surveyed ? {} : null });
+  const brews = [b('a', 1, 'x', true), b('b', 3, 'y', true), b('c', 5, 'x', false)];
+  assert.equal(lastSurveyed(brews, { recipeId: 'r' }).id, 'b');
+  assert.equal(lastSurveyed(brews, { recipeId: 'r', beanId: 'x' }).id, 'a');
+  assert.equal(lastSurveyed(brews, { recipeId: 'other' }), null);
+});
+
+test('그래프 점: 계획선은 pourSec 동안 붓고 다음 단계까지 평평, 실제선은 누른 시각 기준', () => {
+  const plan = buildPlan(KURASU, 16);
+  const pts = planPoints(plan);
+  assert.deepEqual(pts.slice(0, 4), [[0, 0], [10, 40], [40, 40], [50, 100]]);
+  assert.deepEqual(pts[pts.length - 1], [130, 150]);
+  const bars = planBars(plan);
+  assert.deepEqual(bars[0], { label: '뜸 들이기', start: 0, pourEnd: 10, end: 40, targetCumG: 40 });
+  // 기록: 1차를 45초에, 2차를 72초에 누르고 128초에 종료
+  const state = { startedAt: 0, stepIndex: 2, stepStartsSec: [0, 45, 72], endedSec: 128, status: 'ended' };
+  const brew = { recipe: { snapshot: KURASU }, timer: summarize(state, plan) };
+  assert.deepEqual(brewPlanPoints(brew), pts);
+  const act = brewActualPoints(brew);
+  assert.deepEqual(act.slice(0, 5), [[0, 0], [10, 40], [45, 40], [55, 100], [72, 100]]);
+  assert.deepEqual(act[act.length - 1], [128, 150]);
+});
+
+test('뜨거운 물 직접 정하기: 단계 목표는 같은 % 로 나누고, 비우면 레시피 비율', () => {
+  const p = buildPlan(KURASU, 16.5, null, { waterG: 150 });
+  assert.equal(p.hotWaterG, 150);
+  assert.equal(p.waterFixed, true);
+  assert.deepEqual(p.steps.map((s) => s.targetCumG), [40, 100, 150]);
+  assert.equal(buildPlan(KURASU, 16).waterFixed, false);
+});
+
+test('레시피 태그: 핫/아이스 · 드리퍼 · 붓는 횟수', () => {
+  assert.deepEqual(recipeTags(KURASU), ['아이스', 'Hario V60', '3번 붓기']);
+});
+

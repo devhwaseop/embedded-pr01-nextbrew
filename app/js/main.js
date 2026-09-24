@@ -1,6 +1,7 @@
 // NextBrew 진입점 — 화면 전환(해시 라우팅), 하단 메뉴, 시작 처리
 
 import { h } from './ui/dom.js';
+import { icon } from './ui/icons.js';
 import { store, createLocalAdapter, loadActive, copyAll } from './core/store.js';
 import { logEvent } from './core/log.js';
 import { APP_VERSION } from './config.js';
@@ -10,7 +11,7 @@ import { surveyScreen } from './ui/screens/survey.js';
 import { homeScreen, historyScreen, detailScreen } from './ui/screens/records.js';
 import { shareScreen } from './ui/screens/share.js';
 import { beansScreen, beanFormScreen } from './ui/screens/beans.js';
-import { settingsScreen } from './ui/screens/settings.js';
+import { settingsScreen, applyDisplaySettings } from './ui/screens/settings.js';
 
 const ROUTES = [
   [/^#?\/?$/, homeScreen],
@@ -26,11 +27,12 @@ const ROUTES = [
   [/^#\/settings$/, settingsScreen],
 ];
 
+// 아래 탭: 아이콘만 보이고(사용자 요청 9/24) 이름은 화면 읽기 프로그램용으로 숨겨 둔다
 const NAV = [
-  ['#/', '홈'],
-  ['#/history', '기록'],
-  ['#/beans', '원두'],
-  ['#/settings', '설정'],
+  ['#/', '홈', 'home'],
+  ['#/history', '기록', 'history'],
+  ['#/beans', '원두', 'bean'],
+  ['#/settings', '설정', 'settings'],
 ];
 
 const root = document.getElementById('app');
@@ -39,8 +41,11 @@ let cleanup = null;
 function nav(current) {
   return h(
     'nav',
-    { class: 'nav' },
-    ...NAV.map(([href, label]) => h('a', { href, class: current === href || (href !== '#/' && current.startsWith(href)) ? 'on' : '' }, label)),
+    { class: 'nav', 'aria-label': '메뉴' },
+    ...NAV.map(([href, label, name]) => {
+      const on = current === href || (href !== '#/' && current.startsWith(href));
+      return h('a', { href, class: on ? 'on' : '', title: label, 'aria-current': on ? 'page' : null }, icon(name), h('span', { class: 'sr-only' }, label));
+    }),
   );
 }
 
@@ -55,7 +60,9 @@ function render() {
     const node = out instanceof Node ? out : out.node;
     cleanup = out instanceof Node ? null : out.cleanup ?? null;
     const hideNav = !(out instanceof Node) && out.hideNav;
-    root.replaceChildren(node, hideNav ? null : nav(hash));
+    applyDisplaySettings();
+    // replaceChildren 은 null 을 건너뛰지 않고 「null」 글자로 넣는다 — 탭을 숨길 때는 아예 넘기지 않는다
+    root.replaceChildren(...(hideNav ? [node] : [node, nav(hash)]));
     window.scrollTo(0, 0);
     return;
   }

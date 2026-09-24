@@ -86,6 +86,8 @@ export function shareScreen(id) {
   function draw() {
     root.replaceChildren(
       h('h1', null, 'AI로 공유'),
+      // 고정 안내는 제목 아래, 고른 것에 따라 바뀌는 설명은 칩 아래(설정 화면 AI 공유 칸과 같은 배치)
+      h('div', { class: 'hint' }, '형식과 담을 기록의 기본값은 설정에서 바꿀 수 있습니다.'),
       section(
         '형식',
         chips({
@@ -113,7 +115,6 @@ export function shareScreen(id) {
             prepare();
           },
         }),
-        h('div', { class: 'hint' }, '형식과 담을 기록의 기본값은 설정에서 바꿀 수 있습니다.'),
       ),
       ready
         ? section(

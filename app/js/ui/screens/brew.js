@@ -1,9 +1,11 @@
 // 추출 흐름: 준비 → 타이머 → 결과
 
-import { h, svg, section, field, stepper, choiceList, chips, modal, toast, toggle, pressButton, term, termOf } from '../dom.js';
+import { h, svg, section, field, stepper, choiceList, chips, modal, toast, toggle, pressButton, term, termOf, tags, fmtDateTime } from '../dom.js';
+import { planFigure, brewFigure } from '../charts.js';
+import { readCompass, adviseNext, umPerClickFor, lastSurveyed } from '../../core/compass.js';
 import { store, saveActive, loadActive, clearActive } from '../../core/store.js';
 import { PRESETS, findPreset } from '../../data/presets.js';
-import { buildPlan, scaleAdvice, formatRatio, stepHint, HINT_SOURCES } from '../../core/recipe.js';
+import { buildPlan, scaleAdvice, formatRatio, stepHint, HINT_SOURCES, recipeTags } from '../../core/recipe.js';
 import { startBrew, view, advance, undoAdvance, cancel, summarize, presence, acknowledge, elapsedSec } from '../../core/timer.js';
 import { conditionRows, stepRows } from '../../core/facts.js';
 import { WORDS, END_STATE_WORDS, endStateKey } from '../../core/words.js';
@@ -14,6 +16,35 @@ import {
 import { findPrevious, compareTimer } from '../../core/diff.js';
 import { logEvent } from '../../core/log.js';
 import { keepAwake, releaseAwake } from '../../platform/wakelock.js';
+
+// 화면 이동·바깥 링크 버튼(사용자 요청 9/24 — 밑줄 글자 링크 대신 보조 버튼 모양으로 통일).
+// 앱 안으로 가면 「›」, 바깥 사이트(새 창)면 「↗」 — 화살표는 화면 읽기 프로그램에 읽히지 않게 하고, 새 창은 글로 알린다.
+export function linkButton({ href, label, external = false, returnToPrep = false }) {
+  return h(
+    'a',
+    {
+      class: 'button wide link-action',
+      href,
+      target: external ? '_blank' : null,
+      rel: external ? 'noopener' : null,
+      onClick: returnToPrep ? () => sessionStorage.setItem('nb.returnTo', '#/prep') : null,
+    },
+    h('span', null, label),
+    h('span', { class: 'link-arrow', 'aria-hidden': 'true' }, external ? '↗' : '›'),
+    external ? h('span', { class: 'sr-only' }, ' (새 창)') : null,
+  );
+}
+
+// 문장 끝(. ! ?) 다음의 띄어쓰기를 줄바꿈으로
+export function sentenceLines(text) {
+  return (text ?? '').replace(/([.!?])\s+/g, '$1\n');
+}
+
+// 원두만 바꾸고 물은 그대로일 때 비율이 어떻게 바뀌나: 「원두와 물의 비율 1:9.4 → 1:9.1 (… 물 150g 그대로)」
+export function ratioChange(c, doseDeltaG) {
+  const to = c.doseG + doseDeltaG;
+  return `${WORDS.ratio.label} ${formatRatio(c.hotWaterG / c.doseG)} → ${formatRatio(c.hotWaterG / to)} (원두 ${c.doseG}g → ${Math.round(to * 10) / 10}g, 물 ${c.hotWaterG}g 그대로)`;
+}
 
 // ── 준비 ─────────────────────────────────────────────────────
 // 입력 중인 값은 세션 저장소에 둔다. 원두·그라인더를 등록하러 갔다 와도, 취소하고 돌아와도 그대로 남게.
@@ -68,6 +99,7 @@ function defaultsFor(recipeId) {
     grinderId: c?.grind?.grinderId ?? store.list('grinders')[0]?.id ?? null,
     dial: c?.grind?.dial ?? null,
     um: c?.grind?.um ?? null, // 참고 µm(보조, 선택) — 직전 기록과 같은 그라인더·다이얼에서 이어받는다
+    umSd: c?.grind?.umSd ?? null, // 참고 µm 의 표준편차(선택) — 사진 측정 도구가 평균과 함께 낸다
     dripper: c?.dripper ?? DRIPPERS[0],
     filter: c?.filter ?? FILTERS[0],
     rinsed: c?.rinsed ?? null,
@@ -76,6 +108,7 @@ function defaultsFor(recipeId) {
     tempC: lastSame?.conditions.tempC ?? recipe.tempC,
     style: recipe.style,
     iceG: null, // null = 레시피 추천값
+    ratio: null, // 원두와 물의 비율(1:x 의 x). null = 레시피 비율. 뜨거운 물 = 원두량 × 비율
   };
 }
 
@@ -92,7 +125,9 @@ export function prepScreen() {
 
   function draw() {
     const recipe = findPreset(d.recipeId) ?? PRESETS[0];
-    const plan = buildPlan(recipe, d.doseG, customHints(recipe.id));
+    // 원두량·뜨거운 물·비율 세 칸을 다 조정할 수 있다(사용자 요청 9/24). 저장하는 것은 비율 하나 — 원두량을 바꾸면 물이 비율을 따라간다
+    const dose = Number(d.doseG) || recipe.refDoseG;
+    const plan = buildPlan(recipe, dose, customHints(recipe.id), { waterG: d.ratio != null ? dose * d.ratio : null });
     const iceG = d.style === 'hot' ? 0 : d.iceG ?? plan.iceG;
     const advice = scaleAdvice(recipe, d.doseG);
     const beans = store.list('beans').sort((a, b) => a.name.localeCompare(b.name, 'ko'));
@@ -116,17 +151,19 @@ export function prepScreen() {
       h('h1', null, '추출 준비'),
       section(
         '레시피',
+        recipeFilter(),
         h('select', {
           onChange: (e) => {
             // 레시피에 딸린 값만 바꾸고 원두·도구 선택은 그대로 둔다
             const nd = defaultsFor(e.target.value);
-            set({ recipeId: nd.recipeId, doseG: nd.doseG, tempC: nd.tempC, style: nd.style, iceG: null });
+            set({ recipeId: nd.recipeId, doseG: nd.doseG, tempC: nd.tempC, style: nd.style, iceG: null, ratio: null });
           },
-        }, ...PRESETS.map((r) => h('option', { value: r.id, selected: r.id === recipe.id }, r.name))),
+        }, ...shownRecipes(recipe).map((r) => h('option', { value: r.id, selected: r.id === recipe.id }, r.name))),
+        tags(recipeTags(recipe)),
         h(
           'div',
           { class: 'hint' },
-          `${recipe.style === 'iced' ? '아이스' : '핫'} · ${recipe.designedFor} 기준 · 원두 ${recipe.refDoseG}g · ${recipe.tempC}℃ · ${recipe.grindNote}`,
+          `${recipe.style === 'iced' ? '아이스' : '핫'} · ${recipe.designedFor} 기준 · 원두 ${recipe.refDoseG}g · 비율 ${formatRatio(recipe.waterRatio)} · ${recipe.tempC}℃ · ${recipe.grindNote}`,
           recipe.roastNote ? ` · ${recipe.roastNote}` : '',
         ),
         h('div', { class: 'source' }, '출처: ', h('a', { href: recipe.source.url, target: '_blank', rel: 'noopener' }, recipe.source.label)),
@@ -137,10 +174,11 @@ export function prepScreen() {
         !d.beanId && d.beanName
           ? field('원두 이름', h('input', { type: 'text', value: d.beanName.trim(), onChange: (e) => set({ beanName: e.target.value }, false) }))
           : null,
-        h('a', { class: 'link-action', href: '#/bean/new', onClick: () => sessionStorage.setItem('nb.returnTo', '#/prep') }, '＋ 원두 등록'),
+        linkButton({ href: '#/bean/new', label: '＋ 원두 등록', returnToPrep: true }),
         field('원두량', stepper({ value: d.doseG, step: 1, min: 1, max: 100, unit: 'g', onChange: (v) => set({ doseG: v, iceG: null }) }),
           advice ? advice.text : `레시피 기준 원두량입니다. 기준으로 먼저 내린 뒤 바꿔 가며 비교하세요.`),
       ),
+      adviceCard(recipe, grinder),
       section(
         '분쇄',
         grinders.length
@@ -148,9 +186,12 @@ export function prepScreen() {
           : h('div', { class: 'hint' }, '등록된 그라인더가 없습니다. 영점을 쓰려면 설정에서 등록하세요.'),
         field(termOf(WORDS.grindDial), stepper({ value: d.dial, step: 1, min: 0, max: 999, onChange: (v) => set({ dial: v }) }),
           d.dial != null ? `표기 ${formatGrind(d.dial, grinder?.zeroOffset ?? 0)} · 실제 ${grindActual(d.dial, grinder?.zeroOffset ?? 0)}클릭` : '다이얼 값을 넣으면 영점을 반영해 보여 줍니다.'),
-        // 보조값(사용자 결정 9/24): 변환 사이트에서 찾은 추정치를 직접 적는다. 앱이 계산하지 않는다.
-        field(term('참고 µm', '선택 · 변환 사이트의 추정치'), stepper({ value: d.um, step: 10, min: 0, max: 3000, unit: 'µm', onChange: (v) => set({ um: v }, false) })),
-        h('a', { class: 'link-action', href: '#/settings', onClick: () => sessionStorage.setItem('nb.returnTo', '#/prep') }, '그라인더 등록·영점 변경·변환 사이트'),
+        // 보조값(사용자 결정 9/24): 사진으로 잰 값이나 변환 사이트의 추정치를 직접 적는다. 앱은 이 값으로 µm 를 만들지 않고,
+        // 같은 그라인더 기록이 쌓이면 «클릭당 µm» 추정에만 쓴다(core/compass.js).
+        field(term('참고 µm', '선택 · 사진 측정값이나 변환 사이트 추정치'), stepper({ value: d.um, step: 10, min: 0, max: 3000, unit: 'µm', onChange: (v) => set({ um: v }, false) })),
+        field(term('µm 표준편차', '선택 · 사진 측정 결과에 함께 나옴'), stepper({ value: d.umSd, step: 10, min: 0, max: 3000, unit: 'µm', onChange: (v) => set({ umSd: v }, false) })),
+        linkButton({ href: 'https://community.unspecialty.com/compass/grinder', label: '사진으로 분쇄 재기 · 언스페셜티', external: true }),
+        linkButton({ href: '#/settings', label: '그라인더 등록·영점·클릭당 µm', returnToPrep: true }),
       ),
       section(
         '도구',
@@ -164,14 +205,29 @@ export function prepScreen() {
         '물·얼음',
         field('핫/아이스', chips({ options: ['아이스', '핫'], selected: d.style === 'hot' ? '핫' : '아이스', onChange: (v) => set({ style: v === '핫' ? 'hot' : 'iced', iceG: null }) }),
           recipe.style === 'iced' && d.style === 'hot' ? '아이스 기준 레시피라 뜨거운 물 양은 그대로입니다.' : null),
-        field('물 온도', stepper({ value: d.tempC, step: 1, min: 50, max: 100, unit: '℃', onChange: (v) => set({ tempC: v }, false) }), '가열을 끝낸 시점의 온도'),
+        // 설명 모양 통일(사용자 요청 9/24): 항목 이름 옆 옅은 설명(term) — 설정 「보조 설명」으로 켜고 끈다
+        field(term('물 온도', '가열을 끝낸 시점의 온도'), stepper({ value: d.tempC, step: 1, min: 50, max: 100, unit: '℃', onChange: (v) => set({ tempC: v }, false) })),
+        // 뜨거운 물을 바꾸면 비율이 따라간다(비우면 레시피 비율)
+        field(term('뜨거운 물', '원두량 × 비율'), stepper({ value: plan.hotWaterG, step: 1, min: 1, max: 2000, unit: 'g', onChange: (v) => set({ ratio: v == null ? null : v / dose }) })),
+        // 원두와 물의 비율(사용자 요청 9/24 — 흔히 쓰는 1:15 표기, 독립 항목·직접 조정). 바꾸면 뜨거운 물 = 원두량 × 비율
+        field(WORDS.ratio.label, stepper({ value: Math.round(plan.ratioHot * 10) / 10, step: 0.5, min: 1, max: 30, prefix: '1:', onChange: (v) => set({ ratio: v }) }),
+          // 안내는 줄을 나눈다: ① 레시피 비율과 같은지(다르면 되돌리기 버튼) ② 아이스면 얼음까지 넣은 비율
+          [
+            h('div', { class: 'row-line' }, d.ratio != null
+              ? [h('span', null, `레시피 비율(${formatRatio(recipe.waterRatio)})과 다름`), h('button', { type: 'button', class: 'inline-btn', onClick: () => set({ ratio: null }) }, '레시피 비율로')]
+              : '레시피 비율 그대로'),
+            iceG ? h('div', null, `얼음 ${iceG}g까지 넣으면 ${formatRatio((plan.hotWaterG + iceG) / plan.doseG)}`) : null,
+          ]),
         d.style === 'hot'
           ? null
           : field('얼음', stepper({ value: iceG, step: 1, min: 0, max: 500, unit: 'g', onChange: (v) => set({ iceG: v }) }), `추천 ${plan.iceG}g (원두량 × 레시피 비율)`),
       ),
       section(
         '이번 계획',
-        h('div', null, `뜨거운 물 ${plan.hotWaterG}g (${formatRatio(plan.ratioHot)})`, iceG ? ` + 얼음 ${iceG}g = 전체 ${formatRatio((plan.hotWaterG + iceG) / plan.doseG)}` : ''),
+        // 「원두와 물의 비율 1:9.4」는 이름과 값이 따로 떨어지지 않게 한 덩어리로 줄을 바꾼다
+        h('div', null, `원두 ${plan.doseG}g · 뜨거운 물 ${plan.hotWaterG}g · `, h('span', { class: 'nowrap' }, `${WORDS.ratio.label} ${formatRatio(plan.ratioHot)}`),
+          iceG ? h('div', { class: 'hint' }, `얼음 ${iceG}g까지 넣으면 ${formatRatio((plan.hotWaterG + iceG) / plan.doseG)}`) : null),
+        planFigure(plan),
         h(
           'table',
           { class: 'plan' },
@@ -191,7 +247,59 @@ export function prepScreen() {
         hintEditor(recipe),
       ),
       h('button', { class: 'primary big wide', onClick: () => start(recipe, plan, iceG, grinder) }, '추출 시작'),
-      h('div', { class: 'hint center' }, '물을 붓기 시작할 때 누르세요. 추출이 끝나면 자동으로 저장됩니다.'),
+      h('div', { class: 'hint center' }, '물을 붓기 시작할 때 누르세요.', h('br'), '추출이 끝나면 자동으로 저장됩니다.'),
+    );
+  }
+
+  // 레시피 필터(사용자 결정 9/24 — 언스페셜티 레시피 목록의 드리퍼별 필터 참고): 드리퍼가 두 종류 이상일 때만 보인다
+  function recipeFilter() {
+    const drippers = [...new Set(PRESETS.map((r) => r.designedFor).filter(Boolean))];
+    if (drippers.length < 2) return null;
+    return chips({ options: drippers, selected: d.recipeFilter ?? null, onChange: (v) => set({ recipeFilter: v }) });
+  }
+  function shownRecipes(current) {
+    const list = d.recipeFilter ? PRESETS.filter((r) => r.designedFor === d.recipeFilter) : PRESETS;
+    return list.includes(current) ? list : [current, ...list];
+  }
+
+  // 지난번 제안(사용자 결정 9/24 — 커피 컴퍼스): 같은 레시피(원두를 골랐으면 같은 원두)의 가장 최근 «설문한» 기록에서 낸 제안.
+  // [제안대로 맞추기]는 그 기록의 값에서 출발한다: 다이얼 = 그때 실제 클릭 + 제안 클릭(지금 영점 반영), 원두 = 그때 + 제안 g, 물 = 그때 그대로.
+  function adviceCard(recipe, grinder) {
+    const prev = lastSurveyed(store.brews(), { recipeId: recipe.id, beanId: d.beanId });
+    if (!prev) return null;
+    const roast = prev.bean?.id ? store.get('beans', prev.bean.id)?.roast || null : null;
+    const pg = prev.conditions.grind;
+    const sameGrinder = grinder && pg?.grinderId === grinder.id;
+    const upc = sameGrinder ? umPerClickFor(grinder, store.brews()) : null;
+    const adv = adviseNext(readCompass(prev.survey, { roast }), { umPerClick: upc?.value ?? null });
+    if (!adv) return null;
+    const canDial = adv.clicks != null && pg?.dial != null;
+    const apply = () => {
+      const patch = {};
+      if (canDial) patch.dial = pg.dial + (pg.zeroOffset || 0) + adv.clicks - (grinder?.zeroOffset || 0);
+      if (adv.doseDeltaG) {
+        patch.doseG = Math.round((prev.conditions.doseG + adv.doseDeltaG) * 10) / 10;
+        patch.ratio = prev.conditions.hotWaterG / patch.doseG; // 물은 그때 그대로가 되도록
+        patch.iceG = null;
+      }
+      logEvent('advice.apply', {
+        fromBrewId: prev.id, grindUm: adv.grindUm, clicks: adv.clicks, doseDeltaG: adv.doseDeltaG,
+        dial: { from: d.dial, to: patch.dial ?? d.dial }, doseG: { from: d.doseG, to: patch.doseG ?? d.doseG }, waterG: patch.ratio != null ? prev.conditions.hotWaterG : null,
+      });
+      set(patch);
+      toast('제안대로 맞췄습니다.');
+    };
+    const actionable = canDial || adv.doseDeltaG;
+    return section(
+      '지난번 제안',
+      h('div', { class: 'hint' }, `${fmtDateTime(prev.timer.startedAt)} 추출의 설문 기준${roast ? ` · ${roast}` : ''}`),
+      h('ul', { class: 'advice' }, ...adv.lines.map((l) => h('li', null, l))),
+      adv.doseDeltaG ? h('div', { class: 'hint' }, ratioChange(prev.conditions, adv.doseDeltaG)) : null,
+      adv.grindUm && !canDial
+        ? h('div', { class: 'hint' }, sameGrinder ? '클릭당 µm 를 알면 클릭 수로 알려 드립니다(설정 → 그라인더, 또는 참고 µm 를 두 눈금 이상에서 기록).' : '지난번과 그라인더가 달라 분쇄는 µm 로만 보입니다.')
+        : null,
+      upc ? h('div', { class: 'source' }, `클릭당 약 ${upc.value}µm (${upc.source === 'manual' ? '설정에 적은 값' : `기록 ${upc.n}건으로 추정`})`) : null,
+      actionable ? h('button', { type: 'button', onClick: apply }, '제안대로 맞추기') : null,
     );
   }
 
@@ -240,7 +348,7 @@ export function prepScreen() {
       style: d.style,
       tempC: d.tempC,
       grind: d.dial != null || grinder
-        ? { grinderId: grinder?.id ?? null, grinderName: grinder?.name ?? '', dial: d.dial, zeroOffset: grinder?.zeroOffset ?? 0, um: d.um ?? null }
+        ? { grinderId: grinder?.id ?? null, grinderName: grinder?.name ?? '', dial: d.dial, zeroOffset: grinder?.zeroOffset ?? 0, um: d.um ?? null, umSd: d.umSd ?? null }
         : null,
       dripper: d.dripper,
       filter: d.filter,
@@ -252,7 +360,7 @@ export function prepScreen() {
     const now = Date.now();
     const brewId = newId('brew', now);
     saveActive({ brewId, recipeId: recipe.id, recipe, plan: finalPlan, prep, state: startBrew(now) });
-    logEvent('brew.start', { recipeId: recipe.id, doseG: plan.doseG, hotWaterG: plan.hotWaterG, iceG, dripper: d.dripper }, { brewId, now });
+    logEvent('brew.start', { recipeId: recipe.id, doseG: plan.doseG, hotWaterG: plan.hotWaterG, iceG, dripper: d.dripper, ratio: Math.round(plan.ratioHot * 10) / 10, customRatio: plan.waterFixed }, { brewId, now });
     location.hash = '#/timer';
   }
 
@@ -328,6 +436,9 @@ export function timerScreen() {
   const sub = h('div', { class: 'ring-sub' });
   const stepName = h('div', { class: 'ring-step' });
   const elapsed = h('div', { class: 'elapsed' });
+  // 전체 진행 막대(사용자 결정 9/24 — 언스페셜티 진행 화면의 「총 진행상태」 참고): 레시피 종료 목표까지 얼마나 왔나
+  const totalFill = h('div', { class: 'total-fill' });
+  const totalBar = h('div', { class: 'total-bar', role: 'progressbar', 'aria-label': '전체 진행', 'aria-valuemin': 0, 'aria-valuemax': plan.endSec }, totalFill);
   const targetMain = h('div');
   const targetSub = h('div', { class: 'pour-sub' });
   const target = h('div', { class: 'pour-target' }, targetMain, targetSub);
@@ -365,6 +476,7 @@ export function timerScreen() {
     'div',
     { class: 'screen timer' },
     h('div', { class: 'timer-head' }, h('div', { class: 'recipe-name' }, active.recipe.name), elapsed),
+    totalBar,
     h('div', { class: 'ring-wrap' }, ring, h('div', { class: 'ring-center' }, num, sub, stepName)),
     target,
     hint,
@@ -401,6 +513,9 @@ export function timerScreen() {
     const v = view(state, plan, now);
     const ended = state.status === 'ended';
     elapsed.textContent = formatSec(Math.floor(v.elapsed)); // 스톱워치처럼 내림(남은 시간은 올림이라 합이 맞는다)
+    totalFill.style.width = `${Math.min(100, (v.elapsed / plan.endSec) * 100)}%`;
+    totalBar.classList.toggle('over', v.elapsed > plan.endSec);
+    totalBar.setAttribute('aria-valuenow', String(Math.floor(v.elapsed)));
     if (ended) {
       num.textContent = '종료';
       sub.textContent = '';
@@ -428,7 +543,8 @@ export function timerScreen() {
       targetMain.textContent = `${v.step.targetCumG}g까지 붓기`;
       targetSub.textContent = '';
     }
-    hint.textContent = v.step.hint;
+    // 문장마다 줄을 바꾼다(사용자 요청 9/24 — 「~단계입니다.」 다음에서 끊기게). CSS .step-hint 가 white-space: pre-line
+    hint.textContent = sentenceLines(v.step.hint);
     next.textContent = v.next ? `다음: ${v.next.label} · ${v.next.targetCumG}g까지 (${formatSec(v.next.startSec)})` : `물이 다 빠지면 종료 (목표 ${formatSec(plan.endSec)})`;
     nextBtn.setLabel(ended ? '저장 중…' : v.isLast ? '종료' : '다음 푸어 ›');
     nextBtn.disabled = ended;
@@ -564,7 +680,7 @@ export function comparisonBlock(b) {
     lines.push(h('div', { class: 'muted' }, '같은 레시피로 내린 이전 기록이 없습니다.'));
   }
   if (prev.sameBeanOtherRecipe) lines.push(h('div', { class: 'hint' }, `이 원두는 지난번에 「${prev.sameBeanOtherRecipe.recipe.name}」로 내렸습니다.`));
-  if (prev.partner) lines.push(h('a', { class: 'link-action', href: `#/brew/${b.id}` }, '두 기록 1:1 비교 보기 ›'));
+  if (prev.partner) lines.push(linkButton({ href: `#/brew/${b.id}`, label: '두 기록 1:1 비교 보기' }));
   return { lines, prev };
 }
 
@@ -634,7 +750,7 @@ export function resultScreen(id) {
     root.replaceChildren(
       h('h1', null, '추출 결과'),
       h('div', { class: 'hint' }, '자동으로 저장되었습니다. 아래를 고치면 바로 반영됩니다.'),
-      section('결과', timerTable(b), h('div', { class: 'total' }, `총 ${formatSec(b.timer.totalSec)}`, h('span', { class: 'muted' }, ` (레시피 ${formatSec(b.timer.plannedTotalSec)})`)), ...lines),
+      section('결과', timerTable(b), brewFigure(b), h('div', { class: 'total' }, `총 ${formatSec(b.timer.totalSec)}`, h('span', { class: 'muted' }, ` (레시피 ${formatSec(b.timer.plannedTotalSec)})`)), ...lines),
       section(
         '종료 상태',
         chips({

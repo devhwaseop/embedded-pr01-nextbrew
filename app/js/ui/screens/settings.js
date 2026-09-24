@@ -1,4 +1,4 @@
-// 설정: 저장 위치·로그인 / 그라인더(영점) / 백업(JSON 내보내기·가져오기) / 정보
+// 설정: 저장 위치·로그인 / 그라인더(영점·클릭당 µm) / 서버 / AI 공유 / 화면(보조 설명) / 백업(JSON 내보내기·가져오기) / 정보
 
 import { h, section, field, stepper, toast, modal, chips, toggle, term, googleButton } from '../dom.js';
 import { store, createLocalAdapter, copyAll, COLLECTIONS } from '../../core/store.js';
@@ -9,6 +9,18 @@ import { logEvent } from '../../core/log.js';
 import { firebaseEnabled, signIn, signOutUser } from '../../platform/firebase.js';
 import { APP_VERSION } from '../../config.js';
 import { storageBanner } from './records.js';
+import { estimateUmPerClick } from '../../core/compass.js';
+
+// 설정 「보조 설명」(사용자 요청 9/24): 끄면 항목 이름 옆의 옅은 설명(term 안의 term-sub)을 숨긴다. 화면을 그릴 때마다 main.js 가 부른다.
+export function applyDisplaySettings() {
+  document.body.classList.toggle('hide-subs', store.settings().showSubs === false);
+}
+
+// 클릭당 µm 를 비워 두면 쓸 값: 이 그라인더 기록들의 (실제 클릭, 참고 µm)로 구한 기울기
+function umHint(g) {
+  const est = g.id ? estimateUmPerClick(store.brews(), g.id) : null;
+  return est ? `비우면 기록 ${est.n}건으로 추정한 약 ${est.value}µm 를 씁니다.` : '비워 두면, 참고 µm 를 서로 다른 눈금에서 두 번 이상 적었을 때 기록으로 추정합니다.';
+}
 
 function grinderRow(g) {
   const draft = { ...g };
@@ -17,14 +29,17 @@ function grinderRow(g) {
     { class: 'grinder-row' },
     h('input', { type: 'text', value: draft.name, placeholder: '그라인더 이름', onInput: (e) => (draft.name = e.target.value) }),
     field('영점(클릭)', stepper({ value: draft.zeroOffset, step: 1, min: -99, max: 99, onChange: (v) => (draft.zeroOffset = v ?? 0) }), '예: 110(-3)이면 −3'),
+    // 클릭당 µm(선택, 사용자 결정 9/24 — 다음 추출 제안을 클릭 수로 바꾸는 데 쓴다). 비우면 기록의 참고 µm 로 추정한다.
+    field(term('클릭당 µm', '선택 · 다이얼 숫자가 1 커질 때 굵어지는 µm'), stepper({ value: draft.umPerClick, step: 1, min: -500, max: 500, unit: 'µm', onChange: (v) => (draft.umPerClick = v) }),
+      umHint(g)),
     h(
       'button',
       {
         type: 'button',
         onClick: () => {
           if (!draft.name.trim()) return toast('이름을 넣어 주세요.');
-          const saved = store.put('grinders', { ...g, name: draft.name.trim(), zeroOffset: draft.zeroOffset });
-          logEvent('grinder.save', { grinderId: saved.id, name: saved.name, zeroOffset: saved.zeroOffset });
+          const saved = store.put('grinders', { ...g, name: draft.name.trim(), zeroOffset: draft.zeroOffset, umPerClick: draft.umPerClick ?? null });
+          logEvent('grinder.save', { grinderId: saved.id, name: saved.name, zeroOffset: saved.zeroOffset, umPerClick: saved.umPerClick });
           toast('저장했습니다.');
         },
       },
@@ -162,6 +177,14 @@ export function settingsScreen() {
         ' · ',
         h('a', { href: 'https://beeancoffee.com/grinder-setting-converter/', target: '_blank', rel: 'noopener' }, 'Beean Coffee 설정 변환기'),
       ),
+      // 언스페셜티(사용자 추가 9/24): 인쇄한 측정지 위에서 찍은 사진으로 «내» 분쇄의 평균 µm 를 잰다 — 추정표가 아니라 측정이라 줄을 나눈다.
+      // 개발기 칼럼(측정 원리)은 에이전트 확인용으로 받은 것이라 앱에는 두지 않는다(사용자 정정 9/24).
+      h(
+        'div',
+        { class: 'source' },
+        '내 분쇄를 사진으로 재 볼 때(A4 측정지 인쇄): ',
+        h('a', { href: 'https://community.unspecialty.com/compass/grinder', target: '_blank', rel: 'noopener' }, '언스페셜티 분쇄도 가이드'),
+      ),
     ),
     section(
       '서버',
@@ -171,6 +194,9 @@ export function settingsScreen() {
     ),
     section(
       'AI 공유',
+      // 고정 안내는 칸 제목 바로 아래, 고른 것에 따라 바뀌는 설명은 칩 바로 아래(사용자 요청 9/24 — 둘이 붙어 있으면 부자연스럽다).
+      // 두 기본값 모두에 해당하므로 한 번만 둔다. 그라인더·서버 칸의 「제목 → 안내 → 내용」 순서와 같다.
+      h('div', { class: 'hint' }, '공유 화면에서 그때그때 바꿀 수도 있습니다.'),
       field(
         '기본 형식',
         chips({
@@ -182,7 +208,6 @@ export function settingsScreen() {
             if (f) store.setSetting('shareFormat', f);
           },
         }),
-        '공유 화면에서 그때그때 바꿀 수도 있습니다.',
       ),
       field(
         '기본 담을 기록',
@@ -198,8 +223,26 @@ export function settingsScreen() {
       ),
     ),
     section(
+      '화면',
+      toggle({
+        checked: store.settings().showSubs !== false,
+        label: '보조 설명',
+        sub: { on: '항목 이름 옆에 짧은 설명을 함께 보입니다.', off: '항목 이름만 보입니다.' },
+        onChange: (v) => {
+          store.setSetting('showSubs', v);
+          applyDisplaySettings();
+        },
+      }),
+    ),
+    section(
       '백업',
-      toggle({ checked: store.settings().includeLogsInExport, label: term('Debug Log', '켜면 내보내기 파일에 앱 로그를 함께 넣습니다'), onChange: (v) => store.setSetting('includeLogsInExport', v) }),
+      // 켜짐·꺼짐에 따라 설명이 바뀐다(사용자 결정 9/24 — 백업 B안)
+      toggle({
+        checked: store.settings().includeLogsInExport,
+        label: 'Debug Log',
+        sub: { on: '내보내기 파일에 앱 로그를 함께 넣습니다.', off: '앱 로그는 내보내기 파일에 넣지 않습니다.' },
+        onChange: (v) => store.setSetting('includeLogsInExport', v),
+      }),
       h('div', { class: 'row wrap' }, h('button', { onClick: doExport }, 'JSON 내보내기'), h('button', { onClick: () => fileInput.click() }, 'JSON 가져오기'), fileInput),
     ),
     section('정보', h('div', { class: 'hint' }, `버전 ${APP_VERSION} · 저장된 로그 `, logCount)),

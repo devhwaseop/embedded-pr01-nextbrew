@@ -11,14 +11,14 @@ export function conditionRows(b) {
   const g = c.grind;
   const net = netServerWeight(r);
   const grind = g
-    ? `${g.grinderName ? `${g.grinderName} ` : ''}${formatGrind(g.dial, g.zeroOffset)}${g.dial != null ? ` · 실제 ${grindActual(g.dial, g.zeroOffset)}` : ''}${g.um != null ? ` · 참고 약 ${g.um}µm` : ''}`
+    ? `${g.grinderName ? `${g.grinderName} ` : ''}${formatGrind(g.dial, g.zeroOffset)}${g.dial != null ? ` · 실제 ${grindActual(g.dial, g.zeroOffset)}` : ''}${g.um != null ? ` · 참고 약 ${g.um}µm${g.umSd != null ? ` ±${g.umSd}` : ''}` : ''}`
     : '—';
   return [
     ['원두', b.bean?.name ?? '—'],
     ['원두량', `${c.doseG}g`],
     ['뜨거운 물', r.actualWaterG != null ? `${r.actualWaterG}g (계획 ${c.hotWaterG}g)` : `${c.hotWaterG}g`],
     ['얼음', c.style === 'hot' ? '핫' : `${c.iceG}g`],
-    ['비율', formatRatio((r.actualWaterG ?? c.hotWaterG) / c.doseG)],
+    [WORDS.ratio.label, formatRatio((r.actualWaterG ?? c.hotWaterG) / c.doseG)],
     ['온도', `${c.tempC}℃`],
     [WORDS.grind.label, grind],
     ['드리퍼', c.dripper ?? '—'],

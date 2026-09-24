@@ -2,9 +2,9 @@
 // 항목은 SCA 외재적 평가 양식의 재배·가공 항목(국가·지역·생산자·품종·가공 방식)을 참고했다 — 사용자 확인 예정.
 // 노트 추천은 이전에 등록한 같은 산지·가공 원두에서만 가져온다(core/suggest.js).
 
-import { h, section, field, choiceList, tagEditor, toast } from '../dom.js';
+import { h, section, field, choiceList, chips, tagEditor, toast } from '../dom.js';
 import { store } from '../../core/store.js';
-import { createBean, PROCESS_TYPES } from '../../core/schema.js';
+import { createBean, PROCESS_TYPES, ROASTS } from '../../core/schema.js';
 import { suggestNotes } from '../../core/suggest.js';
 import { logEvent } from '../../core/log.js';
 import { loadDraft, saveDraft } from './brew.js';
@@ -20,7 +20,7 @@ export function beansScreen() {
       h(
         'a',
         { class: 'list-row', href: `#/bean/${b.id}` },
-        h('div', null, h('div', null, b.name), h('div', { class: 'hint' }, [b.roaster, b.country, b.process].filter(Boolean).join(' · '))),
+        h('div', null, h('div', null, b.name), h('div', { class: 'hint' }, [b.roaster, b.country, b.process, b.roast].filter(Boolean).join(' · '))),
         h('div', { class: 'right hint' }, (b.notes ?? []).slice(0, 3).join(', ')),
       ),
     ),
@@ -39,9 +39,12 @@ export function beanFormScreen(id) {
   const notesBox = h('div');
   const drawNotes = () => {
     const sug = suggestNotes(others(), { country: bean.country, process: bean.process, excludeId: bean.id });
+    // replaceChildren 은 null 을 「null」 글자로 넣는다(9/24 사용자가 발견) — 빈 자리는 빼고 넘긴다
     notesBox.replaceChildren(
-      sug.length ? h('div', { class: 'hint' }, `같은 산지로 전에 등록한 노트: ${sug.join(', ')}`) : null,
-      tagEditor({ options: sug, selected: bean.notes, onChange: (v) => (bean.notes = v), placeholder: '봉투에 적힌 노트' }),
+      ...[
+        sug.length ? h('div', { class: 'hint' }, `같은 산지로 전에 등록한 노트: ${sug.join(', ')}`) : null,
+        tagEditor({ options: sug, selected: bean.notes, onChange: (v) => (bean.notes = v), placeholder: '로스터리 표기 노트' }),
+      ].filter(Boolean),
     );
   };
   const country = text('country', '예: 에티오피아');
@@ -77,6 +80,8 @@ export function beanFormScreen(id) {
       field('농장·생산자', text('producer')),
       field('품종', text('variety')),
       field('가공 방식', choiceList({ options: usedProcesses, value: bean.process || null, onChange: (v) => { bean.process = v; drawNotes(); } })),
+      // 배전도(선택): 다음 추출 제안에서 강배전의 쓴맛을 한 단계 낮춰 본다(core/compass.js)
+      field('배전도', chips({ options: ROASTS, selected: bean.roast || null, onChange: (v) => (bean.roast = v ?? '') })),
       field('노트', notesBox),
       field('메모', h('textarea', { rows: 2, value: bean.memo ?? '', onInput: (e) => (bean.memo = e.target.value) })),
     ),

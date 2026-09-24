@@ -7,7 +7,9 @@ import { logEvent } from '../../core/log.js';
 import { formatSec, formatDelta, SURVEY_ITEMS, INTENSITY_WORDS, LIKING_WORDS } from '../../core/schema.js';
 import { sideBySide } from '../../core/diff.js';
 import { firebaseEnabled } from '../../platform/firebase.js';
-import { timerTable, conditionsList, comparisonBlock } from './brew.js';
+import { timerTable, conditionsList, comparisonBlock, ratioChange } from './brew.js';
+import { brewFigure, compareFigure, compassFigure } from '../charts.js';
+import { readCompass, adviseNext, umPerClickFor } from '../../core/compass.js';
 
 function brewRow(b) {
   return h(
@@ -57,7 +59,7 @@ export function homeScreen() {
     h('h1', null, 'NextBrew'),
     storageBanner(),
     active?.state?.status === 'running' ? h('a', { class: 'button primary big wide', href: '#/timer' }, '진행 중인 추출로 돌아가기') : null,
-    h('a', { class: 'button primary big wide', href: '#/prep' }, '새 추출 준비'),
+    h('a', { class: 'button primary big wide', href: '#/prep' }, '추출하기'),
     waiting.length ? section('설문을 기다리는 기록', ...waiting.map(brewRow)) : null,
     section('최근 기록', ...(brews.length ? brews.slice(0, 3).map(brewRow) : [h('div', { class: 'hint' }, '아직 기록이 없습니다.')])),
   );
@@ -107,6 +109,26 @@ function compareTable(b, partner, kind) {
   );
 }
 
+// 다음 추출 제안(사용자 결정 9/24 — 커피 컴퍼스, core/compass.js). 설문한 기록에만 보인다.
+function adviceSection(b) {
+  if (!b.survey) return null;
+  const roast = b.bean?.id ? store.get('beans', b.bean.id)?.roast || null : null;
+  const c = readCompass(b.survey, { roast });
+  const grinder = b.conditions.grind?.grinderId ? store.get('grinders', b.conditions.grind.grinderId) : null;
+  const upc = umPerClickFor(grinder, store.brews());
+  const adv = adviseNext(c, { umPerClick: upc?.value ?? null });
+  if (!adv) return section('다음 추출 제안', h('div', { class: 'hint' }, '설문에 답한 항목이 없어 제안하지 않습니다.'));
+  return section(
+    '다음 추출 제안',
+    compassFigure(c),
+    h('ul', { class: 'advice' }, ...adv.lines.map((l) => h('li', null, l))),
+    adv.doseDeltaG ? h('div', { class: 'hint' }, ratioChange(b.conditions, adv.doseDeltaG)) : null,
+    c.cues.length ? h('div', { class: 'hint' }, `근거: ${c.cues.map((x) => x.text).join(' · ')}`) : null,
+    upc ? h('div', { class: 'source' }, `클릭당 약 ${upc.value}µm (${upc.source === 'manual' ? '설정에 적은 값' : `기록 ${upc.n}건으로 추정`})`) : null,
+    h('div', { class: 'source' }, '방향: Barista Hustle 「Coffee Compass」 · 조정 단위(30µm·0.5g): 언스페셜티 브루잉 가이드. 다음 추출 준비 화면에도 보입니다.'),
+  );
+}
+
 export function detailScreen(id) {
   const b = store.get('brews', id);
   if (!b) return h('div', { class: 'screen' }, '기록을 찾을 수 없습니다.');
@@ -116,10 +138,11 @@ export function detailScreen(id) {
     { class: 'screen' },
     h('h1', null, b.recipe.name),
     h('div', { class: 'hint' }, `${fmtDateTime(b.timer.startedAt)} · 총 ${formatSec(b.timer.totalSec)} (레시피 ${formatSec(b.timer.plannedTotalSec)})`),
-    section('지난 추출과 비교', ...lines.filter((l) => l.tagName !== 'A'), prev.partner ? compareTable(b, prev.partner, prev.partnerKind) : null),
-    section('타이머', timerTable(b)),
+    section('지난 추출과 비교', ...lines.filter((l) => l.tagName !== 'A'), prev.partner ? compareFigure(b, prev.partner, '지난 추출') : null, prev.partner ? compareTable(b, prev.partner, prev.partnerKind) : null),
+    section('타이머', timerTable(b), brewFigure(b)),
     section('조건', conditionsList(b)),
     section('맛', surveySummary(b.survey)),
+    adviceSection(b),
     h(
       'div',
       { class: 'row wrap' },
