@@ -19,6 +19,7 @@ import { readCompass, adviseNext, estimateUmPerClick, umPerClickFor, lastSurveye
 import { planPoints, brewPlanPoints, brewActualPoints, planBars } from '../app/js/core/chart.js';
 import { recipeTags } from '../app/js/core/recipe.js';
 import { toImportFormat, readRecipeText, validateRecipeImport, recipePrompt, blankRecipe } from '../app/js/core/recipeImport.js';
+import { ADVICE_FORMAT, ADVICE_EXAMPLE, adviceFormatText, adviceResultPrompt, readAdviceText, validateAdvice, advicePatch, lastAdvised } from '../app/js/core/adviceImport.js';
 
 const KURASU = findPreset('kurasu-japanese-iced');
 
@@ -641,8 +642,8 @@ test('타이머 대기: [시작] 전에는 0초에 멈춰 있고 방치 확인�
 });
 
 test('공유창 파일 이름: 크롬이 막는 .md·.json 은 .txt 로 보낸다', () => {
-  assert.equal(shareSheetName('nextbrew-20260925-0712.md'), 'nextbrew-20260925-0712-md.txt');
-  assert.equal(shareSheetName('nextbrew-20260925-0712.json'), 'nextbrew-20260925-0712-json.txt');
+  assert.equal(shareSheetName('nextbrew-20260925-0712.md'), 'nextbrew-20260925-0712(md).txt');
+  assert.equal(shareSheetName('nextbrew-20260925-0712.json'), 'nextbrew-20260925-0712(json).txt');
 });
 
 test('AI 공유 기본 프롬프트: 파일의 역할 이름을 그대로 쓰고, 기본 질문은 다음 추출 조정 제안', () => {
@@ -650,5 +651,83 @@ test('AI 공유 기본 프롬프트: 파일의 역할 이름을 그대로 쓰고
   for (const role of Object.values(SHARE_ROLES)) assert.ok(p.includes(`「${role}」`), `역할 이름이 프롬프트와 다름: ${role}`);
   assert.match(p, /다음 추출에서 무엇을 바꾸면 좋을지/);
   assert.match(p, /지어내지 말고/);
+});
+
+test('AI 제안 가져오기: 프롬프트 속 예시를 꺼내 검사하면 오류 0, 기록 ID 가 다르거나 값이 없으면 막는다', () => {
+  const b = makeBrew({ id: 'brew_예시', at: 1_000, presses: [40, 70, 130] });
+  // 프롬프트(처음·결과 받기 둘 다)에 형식이 들어 있고, 그 안의 예시가 그대로 통과한다
+  assert.ok(defaultSharePrompt().includes(ADVICE_FORMAT) && adviceResultPrompt().includes(ADVICE_FORMAT));
+  assert.match(defaultSharePrompt(), /한 번만/);
+  const { raw } = readAdviceText(adviceFormatText());
+  const ok = validateAdvice(raw, { brew: b });
+  assert.deepEqual(ok.errors, []);
+  assert.deepEqual(ok.advice.next, ADVICE_EXAMPLE.next);
+  assert.equal(ok.advice.changes.length, 2);
+  // 다른 기록의 답·값이 하나도 없음·범위 밖은 오류
+  assert.match(validateAdvice({ ...raw, brewId: 'brew_다른것' }, { brew: b }).errors.join(), /다른 기록의 답/);
+  assert.match(validateAdvice({ ...raw, next: { grindDial: null, doseG: null, hotWaterG: null, tempC: null } }, { brew: b }).errors.join(), /값이 하나도 없습니다/);
+  assert.match(validateAdvice({ ...raw, next: { ...raw.next, tempC: 120 } }, { brew: b }).errors.join(), /50~100/);
+});
+
+test('AI 제안 가져오기: 코드 블록·단위 붙은 숫자·끝 쉼표를 고쳐 읽고, 모르는 항목·크게 바뀐 값은 경고한다', () => {
+  const b = makeBrew({ id: 'brew_x', at: 1_000, presses: [40, 70, 130] });
+  const pasted = '결론입니다.\n```json\n{ "format": "nextbrew-advice", "version": 1, "brewId": "brew_x", "next": { "grindDial": "104", "doseG": "16.5g", "hotWaterG": 150, "tempC": "92℃", }, "changes": [{ "item": "분쇄", "text": "가늘게" }], }\n```\n끝';
+  const { raw, fixes } = readAdviceText(pasted);
+  assert.ok(fixes.some((f) => /쉼표/.test(f)));
+  const r = validateAdvice(raw, { brew: b });
+  assert.deepEqual(r.errors, []);
+  assert.deepEqual(r.advice.next, { grindDial: 104, doseG: 16.5, hotWaterG: 150, tempC: 92 });
+  assert.equal(r.advice.changes[0].item, 'other');
+  assert.ok(r.warnings.some((w) => /「그 밖」/.test(w)));
+  assert.equal(r.warnings.filter((w) => /숫자 .*로 읽었습니다/.test(w)).length, 3);
+  // 이번 110 → 104 는 20 이내라 경고 없음, 70 이면 크게 바뀐다고 경고
+  assert.ok(!r.warnings.some((w) => /크게 바뀝니다/.test(w)));
+  assert.ok(validateAdvice({ ...raw, next: { ...raw.next, grindDial: 70 } }, { brew: b }).warnings.some((w) => /크게 바뀝니다/.test(w)));
+});
+
+test('AI 제안대로 맞추기: 같은 그라인더면 다이얼까지, 다르면 다이얼은 두고, 원두만 바꾸면 물은 그 기록 그대로', () => {
+  const from = makeBrew({ id: 'f', at: 1_000, presses: [40, 70, 130] });
+  from.conditions.grind.grinderId = 'g1';
+  from.aiAdvice = { next: { grindDial: 108, doseG: 16.5, hotWaterG: null, tempC: 92 } };
+  const same = advicePatch(from.aiAdvice, from, { grinderId: 'g1' });
+  assert.equal(same.patch.dial, 108);
+  assert.equal(same.patch.doseG, 16.5);
+  assert.equal(Math.round(same.patch.ratio * 16.5), 150); // 물 150g 그대로
+  assert.equal(same.patch.tempC, 92);
+  const other = advicePatch(from.aiAdvice, from, { grinderId: 'g2' });
+  assert.equal(other.patch.dial, undefined);
+  assert.equal(other.dialSkipped, true);
+  // 준비 화면에 띄울 제안: 같은 레시피의 가장 최근 AI 제안(원두를 골랐으면 같은 원두)
+  const newer = makeBrew({ id: 'n', at: 9_000, presses: [40, 70, 130] });
+  assert.equal(lastAdvised([newer, from], { recipeId: KURASU.id }).id, 'f');
+  assert.equal(lastAdvised([newer, from], { recipeId: KURASU.id, beanId: 'other' }), null);
+});
+
+test('AI 공유 파일(MD)에 기록 ID 가 들어 있다 — AI 가 결과의 brewId 로 옮겨 적는다', () => {
+  const a = makeBrew({ id: 'brew_aaa', at: 1_000, presses: [40, 70, 130] });
+  const md = toMarkdown(buildSharePackage({ brews: [a], current: a }));
+  assert.match(md, /기록 ID: brew_aaa/);
+});
+
+test('끌어 넘기기: 네 모서리(시스템 뒤로 가기·홈·알림창 제스처 자리)에서 시작하면 받지 않고, 25%·빠른 튕김이면 넘긴다', async () => {
+  const { startsInEdge, swipeDecision, EDGE } = await import('../app/js/ui/tabSwipe.js');
+  const W = 390;
+  const H = 844;
+  const none = { top: 0, bottom: 0, left: 0, right: 0 };
+  // 좌우 40px(안드로이드 뒤로 가기 30dp × 최대 1.33) · 아래 48px(홈 제스처) · 위 24px(알림창)
+  assert.deepEqual(EDGE, { side: 40, top: 24, bottom: 48 });
+  assert.equal(startsInEdge(39, 400, W, H, none), true);
+  assert.equal(startsInEdge(W - 39, 400, W, H, none), true);
+  assert.equal(startsInEdge(200, 23, W, H, none), true);
+  assert.equal(startsInEdge(200, H - 47, W, H, none), true);
+  assert.equal(startsInEdge(200, 400, W, H, none), false);
+  // 아이폰 홈 인디케이터 안전 영역(34px)만큼 아래 제외 구역이 넓어진다
+  assert.equal(startsInEdge(200, H - 70, W, H, { ...none, bottom: 34 }), true);
+  // 놓을 때: 폭 25% 넘게 끌었거나(0.4px/ms 넘게 같은 방향으로) 튕겼으면 넘긴다. 그쪽에 탭이 없으면 돌아간다
+  assert.equal(swipeDecision(-100, 0, W, true), 'go');
+  assert.equal(swipeDecision(-60, -0.1, W, true), 'back');
+  assert.equal(swipeDecision(-60, -0.6, W, true), 'go');
+  assert.equal(swipeDecision(-60, 0.6, W, true), 'back'); // 끈 방향과 튕긴 방향이 다르면 돌아간다
+  assert.equal(swipeDecision(200, 0, W, false), 'back'); // 첫 탭에서 오른쪽으로 끌기
 });
 

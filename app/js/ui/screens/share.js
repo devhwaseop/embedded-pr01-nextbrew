@@ -10,6 +10,7 @@
 
 import { h, fill, section, chips, toast } from '../dom.js';
 import { icon } from '../icons.js';
+import { brewNotFound } from './records.js';
 import { store } from '../../core/store.js';
 import { SHARE_FORMATS, SHARE_SCOPES } from '../../core/schema.js';
 import { buildSharePackage, shareFileName, shareSheetName, toJSON, toMarkdown, defaultSharePrompt, SHARE_ROLES } from '../../core/share.js';
@@ -26,7 +27,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export function shareScreen(id) {
   const b = store.get('brews', id);
-  if (!b) return h('div', { class: 'screen' }, '기록을 찾을 수 없습니다.');
+  if (!b) return brewNotFound();
   const root = h('div', { class: 'screen' });
   let format = SHARE_FORMATS.includes(store.settings().shareFormat) ? store.settings().shareFormat : 'md';
   let scope = SHARE_SCOPES.includes(store.settings().shareScope) ? store.settings().shareScope : 'with';
@@ -93,6 +94,8 @@ export function shareScreen(id) {
       h('li', null, '아래 프롬프트를 복사합니다(고쳐 써도 됩니다).'),
       h('li', null, '[공유하기]를 누르고 AI 앱(ChatGPT·Gemini·Claude 등)을 고릅니다.'),
       h('li', null, 'AI 대화창에 파일이 붙으면, 프롬프트를 붙여 넣고 보냅니다.'),
+      // 9/25: AI 답(JSON)을 앱으로 가져오기
+      h('li', null, 'AI 가 앱에 넣을 결과(JSON)를 주면, 기록 화면의 「AI 제안」에 붙여 넣습니다.'),
     ),
   );
 

@@ -5,6 +5,7 @@
 // 입력칸을 고칠 때는 검사 결과 칸만 다시 그린다(화면 전체를 다시 그리면 입력 중인 칸의 커서가 튄다).
 
 import { h, fill, section, field, chips, toast, modal, tags, linkButton } from '../dom.js';
+import { beansSegment } from './beans.js';
 import { store } from '../../core/store.js';
 import { logEvent } from '../../core/log.js';
 import { PRESETS, findPreset } from '../../data/presets.js';
@@ -276,7 +277,8 @@ export function recipesScreen() {
     const mine = userRecipes();
     fill(
       root,
-      h('h1', null, '레시피'),
+      beansSegment('recipes'),
+      h('h1', { class: 'sr-only' }, '레시피'),
       section(
         'AI로 레시피 추가',
         h(

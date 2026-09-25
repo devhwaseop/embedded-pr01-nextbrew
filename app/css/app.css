@@ -95,10 +95,11 @@ dl.kv dd { margin: 0; }
 .badge { color: var(--warn); font-size: var(--fs-help); }
 .banner { background: #fff4e0; border: 1px solid #f1d9a8; border-radius: 10px; padding: var(--pad-box); font-size: var(--fs-label); }
 .banner.ok { background: #eaf5ec; border-color: #b9dcc0; }
-.nav { position: fixed; bottom: 0; left: 0; right: 0; display: flex; background: var(--card); border-top: 1px solid var(--line); padding-bottom: env(safe-area-inset-bottom); }
+.nav { position: fixed; bottom: 0; left: 0; right: 0; z-index: 5; display: flex; background: var(--card); border-top: 1px solid var(--line); padding-bottom: env(safe-area-inset-bottom); }
 /* 아래 탭: 아이콘만(사용자 요청 9/24). 고른 탭은 색 + 위쪽 막대 + 굵은 선 — 색만으로 구분하지 않게 */
 .nav a { flex: 1; display: flex; align-items: center; justify-content: center; min-height: 52px; text-decoration: none; color: var(--muted); }
-.nav a.on { color: var(--accent); box-shadow: inset 0 3px 0 var(--accent); }
+.nav a.on { color: var(--accent); } /* 위쪽 막대는 .nav-ind 가 맡는다(9/25 — 탭을 옮기면 미끄러져 간다) */
+.nav-ind { position: absolute; top: 0; left: 0; height: 3px; background: var(--accent); border-radius: 0 0 2px 2px; pointer-events: none; }
 .nav a.on .icon { stroke-width: 2.6; }
 .toast { position: fixed; left: 50%; bottom: 90px; transform: translateX(-50%); background: var(--accent); color: #fff; padding: var(--pad-box); border-radius: 10px; z-index: 20; }
 .modal-back { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.35); display: flex; align-items: center; justify-content: center; z-index: 10; padding: 16px; }
@@ -124,32 +125,37 @@ input.scale.off { opacity: 0.25; }
 .ticks { display: grid; grid-template-columns: repeat(var(--n, 5), 1fr); text-align: center; font-size: var(--fs-caption); color: var(--muted); }
 .scale-word { font-size: var(--fs-label); }
 
-/* 타이머 — 폰을 세워 두고 멀리서 보는 화면이라 숫자·목표는 따로 크게 둔다(글자 크기 예외 목록에 있음) */
-.timer { min-height: 100vh; justify-content: space-between; }
+/* 타이머 — 폰을 세워 두고 멀리서 보는 화면이라 숫자·목표는 따로 크게 둔다(글자 크기 예외 목록에 있음).
+   9/25 사용자 요청: 스크롤·확대가 되지 않게 한 화면에 모두 들어가고, 기기 크기에 맞춰 변한다.
+   - 높이는 dvh(주소창을 뺀 실제 보이는 높이), 원 크기는 폭 80%·높이 38%·360px 중 가장 작은 값
+   - 원 안 글자는 원 크기에 비례(cqw = 원 폭의 1%), 원 밖 글자는 화면 높이에 따라 최소~최대 사이(clamp)
+   - 아래 탭용 여백(body 72px)을 빼고, 손가락 스크롤·확대를 막는다(touch-action: none, main.js 의 viewport·gesturestart) */
+body.timer-mode { padding-bottom: 0; overflow: hidden; overscroll-behavior: none; }
+.timer { height: 100vh; height: 100dvh; min-height: 0; overflow: hidden; justify-content: space-between; gap: clamp(6px, 1.2dvh, 12px); padding-bottom: calc(16px + env(safe-area-inset-bottom)); touch-action: none; user-select: none; -webkit-user-select: none; }
 .timer-head { display: flex; justify-content: space-between; align-items: center; }
 .recipe-name { font-weight: 700; font-size: var(--fs-section); }
 .elapsed { font-variant-numeric: tabular-nums; font-size: 1.4rem; border: 2px solid var(--text); border-radius: 8px; padding: 2px 10px; }
-.ring-wrap { position: relative; width: min(80vw, 320px); aspect-ratio: 1; margin: 0 auto; }
+.ring-wrap { position: relative; width: min(80vw, 38dvh, 360px); aspect-ratio: 1; margin: 0 auto; flex: none; container-type: inline-size; border-radius: 50%; }
 .ring { width: 100%; height: 100%; }
 .ring-bg { fill: none; stroke: var(--line); stroke-width: 14; }
 .ring-fg { fill: none; stroke: var(--accent); stroke-width: 14; stroke-linecap: round; transition: stroke-dashoffset 0.2s linear; }
 .ring-center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
-.ring-num { font-size: 4rem; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1; }
-.ring-sub { color: var(--muted); }
-.ring-step { font-size: 1.2rem; margin-top: 6px; }
+.ring-num { font-size: 27cqw; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1; }
+.ring-sub { color: var(--muted); font-size: 5.5cqw; }
+.ring-step { font-size: 7.5cqw; margin-top: 2cqw; }
 .timer.over .ring-num, .timer.over .ring-sub { color: var(--warn); }
 .timer.over .ring-fg { stroke: var(--warn); }
-.pour-target { font-size: 1.5rem; font-weight: 700; text-align: center; border-radius: 12px; padding: var(--sp-2) var(--sp-3); }
+.pour-target { font-size: clamp(1.3rem, 3.3dvh, 1.75rem); font-weight: 700; text-align: center; border-radius: 12px; padding: var(--sp-2) var(--sp-3); }
 /* 붓는 구간 강조 — 파스텔 빨강, 2.4초에 한 번 은은하게(W3C 2.3.1: 초당 3회 초과 깜박임·채도 높은 빨강 깜박임 회피) */
 .pour-target.pouring { color: #9c3d38; background: #fbe8e6; animation: pour-pulse 1.2s ease-in-out infinite alternate; }
 @keyframes pour-pulse { from { background: #fbe8e6; } to { background: #f3cfcb; } }
 /* 「동작 줄이기」를 켠 사람에게는 깜박임 없이 색만 */
 @media (prefers-reduced-motion: reduce) { .pour-target.pouring { animation: none; } }
-.step-hint { color: var(--muted); font-size: var(--fs-help); text-align: center; white-space: pre-line; } /* 문장마다 줄바꿈(JS 가 \n 을 넣는다) */
-.next { text-align: center; color: var(--muted); font-size: var(--fs-label); }
+.step-hint { color: var(--muted); font-size: clamp(1rem, 2.3dvh, 1.25rem); text-align: center; white-space: pre-line; min-height: 0; overflow: hidden; } /* 문장마다 줄바꿈(JS 가 \n 을 넣는다). 9/25 크게 */
+.next { text-align: center; color: var(--muted); font-size: clamp(1.05rem, 2.4dvh, 1.3rem); } /* 9/25 크게 */
 
-/* 붓기 안내 두 줄째(속도·남은 붓기 시간) / 붓기 끝난 뒤 기다리는 구간 */
-.pour-sub { font-size: 1rem; font-weight: 500; }
+/* 붓기 안내 두 줄째(속도·남은 붓기 시간) — 윗줄 「40g까지 붓기」와 같은 크기(9/25 사용자 요청), 굵기로만 구분 / 붓기 끝난 뒤 기다리는 구간 */
+.pour-sub { font-size: 1em; font-weight: 500; }
 .pour-sub:empty { display: none; }
 .pour-target.waiting { color: var(--muted); }
 
@@ -317,3 +323,63 @@ ol.guide { margin: 0; padding-left: 20px; display: flex; flex-direction: column;
 .code-box .prompt-text { font-size: var(--fs-help); line-height: 1.5; background: var(--bg); padding: var(--sp-3); padding-right: 52px; resize: vertical; }
 .copy-icon { position: absolute; top: var(--sp-1); right: var(--sp-1); width: 44px; height: 44px; padding: 0; display: flex; align-items: center; justify-content: center; color: var(--muted); background: var(--card); }
 .copy-icon .icon { width: 18px; height: 18px; }
+.pre-line { white-space: pre-line; } /* 글 안의 줄바꿈(\n)을 그대로 보인다 */
+dl.kv dd.changed { font-weight: 700; } /* AI 제안: 이번과 달라지는 값 */
+/* 아래 탭 슬라이드 전환(9/25, ui/tabSlide.js): 탭 화면들을 옆으로 늘어놓은 그림을 탭 막대 아래에 덮고 밀어 옮긴다 */
+.tab-slide { position: fixed; inset: 0; z-index: 4; overflow: hidden; background: var(--bg); pointer-events: none; }
+.tab-slide-strip { display: flex; height: 100%; will-change: transform; }
+.tab-slide-pane { position: relative; flex: none; width: 100vw; height: 100%; overflow: hidden; }
+.tab-slide-inner { position: absolute; left: 0; right: 0; }
+/* 타이머 아래 버튼(9/25): 크게, [다음 푸어]가 [취소]보다 넓게 */
+.timer .row .big { min-height: clamp(60px, 9dvh, 88px); font-size: clamp(1.2rem, 2.9dvh, 1.55rem); }
+.timer .row .press { flex: 2; }
+/* 원 전체 누름(9/25): 누르면 살짝 눌리고, 누른 자리에서 물결이 퍼진다. 밖으로 밀면 빨간 테두리와 「놓으면 취소」 */
+.press-ring { cursor: pointer; touch-action: none; -webkit-tap-highlight-color: transparent; overflow: hidden; transition: transform 120ms ease-out; }
+.press-ring.pressing { transform: scale(0.97); }
+.press-ring.abort .ring-bg { stroke: var(--warn); }
+.press-ring.abort::after { content: '놓으면 취소'; position: absolute; left: 0; right: 0; bottom: 16%; text-align: center; color: var(--warn); font-weight: 700; font-size: 6cqw; }
+.press-ring:focus-visible { outline: 3px solid var(--accent); outline-offset: 4px; }
+.ring-ripple { position: absolute; width: 60cqw; height: 60cqw; margin: -30cqw 0 0 -30cqw; border-radius: 50%; background: rgba(59, 42, 32, 0.16); transform: scale(0); animation: ring-ripple 500ms ease-out forwards; pointer-events: none; }
+@keyframes ring-ripple { to { transform: scale(2.4); opacity: 0; } }
+/* 숫자 바뀜(9/25): 원 안 큰 숫자가 바뀔 때 살짝 올라오며 */
+.ring-num.tick { animation: num-tick 220ms ease-out; }
+@keyframes num-tick { from { transform: translateY(8%); opacity: 0.35; } to { transform: none; opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .ring-ripple, .ring-num.tick { animation: none; } .press-ring { transition: none; } }
+
+/* ── 9/25 시각 요소(사용자 결정: 모두 적용) ─────────────────────────── */
+/* 원두 탭 [원두 | 레시피] 전환 — 화면 제목 자리 */
+.segment { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-1); padding: var(--sp-1); background: var(--card); border: 1px solid var(--line); border-radius: 12px; }
+.seg { display: flex; align-items: center; justify-content: center; gap: var(--sp-2); min-height: 44px; border-radius: 9px; color: var(--muted); text-decoration: none; font-size: var(--fs-card); font-weight: 700; }
+.seg .icon { width: 20px; height: 20px; }
+.seg.on { background: var(--accent); color: var(--accent-text); }
+/* 끌어 넘기기(ui/tabSwipe.js): 탭 첫 화면에서는 가로 끌기를 앱이 받고 세로 스크롤·확대는 브라우저에 맡긴다 */
+html.tab-root, html.tab-root body { touch-action: pan-y pinch-zoom; }
+.swipe-layer { position: fixed; inset: 0; z-index: 3; pointer-events: none; }
+.swipe-pane { position: absolute; top: 0; left: 0; width: 100vw; height: 100%; overflow: hidden; background: var(--bg); }
+/* 화면 전환(main.js transitionKind). 탭 막대는 따로 떼어 움직이지 않게 */
+.nav { view-transition-name: tabbar; }
+::view-transition-group(tabbar) { animation: none; }
+/* 준비 → 타이머 → 결과 → 설문(shared axis Z): 앞으로 = 이전 화면이 커지며 사라지고 새 화면이 작은 데서 다가온다. 뒤로는 반대 */
+:root[data-vt='z-forward']::view-transition-old(root) { animation: vt-z-out-fwd 300ms cubic-bezier(0.4, 0, 0.2, 1) both; }
+:root[data-vt='z-forward']::view-transition-new(root) { animation: vt-z-in-fwd 300ms cubic-bezier(0.4, 0, 0.2, 1) both; }
+:root[data-vt='z-back']::view-transition-old(root) { animation: vt-z-out-back 300ms cubic-bezier(0.4, 0, 0.2, 1) both; }
+:root[data-vt='z-back']::view-transition-new(root) { animation: vt-z-in-back 300ms cubic-bezier(0.4, 0, 0.2, 1) both; }
+@keyframes vt-z-out-fwd { 0% { opacity: 1; transform: scale(1); } 35% { opacity: 0; } 100% { opacity: 0; transform: scale(1.1); } }
+@keyframes vt-z-in-fwd { 0%, 35% { opacity: 0; transform: scale(0.8); } 100% { opacity: 1; transform: scale(1); } }
+@keyframes vt-z-out-back { 0% { opacity: 1; transform: scale(1); } 35% { opacity: 0; } 100% { opacity: 0; transform: scale(0.8); } }
+@keyframes vt-z-in-back { 0%, 35% { opacity: 0; transform: scale(1.1); } 100% { opacity: 1; transform: scale(1); } }
+/* 목록의 한 줄 ↔ 상세(container transform): 이름이 같은 두 요소를 브라우저가 크기·자리를 이어 준다 */
+::view-transition-group(brew-card) { animation-duration: 320ms; animation-timing-function: cubic-bezier(0.2, 0, 0, 1); }
+::view-transition-image-pair(brew-card) { overflow: hidden; border-radius: 10px; }
+:root[data-vt='expand']::view-transition-old(root), :root[data-vt='expand']::view-transition-new(root),
+:root[data-vt='collapse']::view-transition-old(root), :root[data-vt='collapse']::view-transition-new(root) { animation-duration: 220ms; }
+/* 누름 반응: 누르는 동안 살짝 눌린다 */
+button, .button, .chip, .list-row, .seg { transition: transform 90ms ease-out; }
+button:active:not(:disabled), .button:active, .chip:active, .list-row:active, .seg:active { transform: scale(0.97); }
+.nav a .icon { transition: transform 90ms ease-out; }
+.nav a:active .icon { transform: scale(0.88); }
+@media (prefers-reduced-motion: reduce) {
+  button, .button, .chip, .list-row, .seg, .nav a .icon { transition: none; }
+  button:active:not(:disabled), .button:active, .chip:active, .list-row:active, .seg:active, .nav a:active .icon { transform: none; }
+}
+

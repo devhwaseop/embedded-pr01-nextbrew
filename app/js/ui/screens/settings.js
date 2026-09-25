@@ -1,12 +1,12 @@
 // 설정: 저장 위치·로그인 / 그라인더(영점·클릭당 µm) / 서버 / AI 공유 / 화면(보조 설명) / 백업(JSON 내보내기·가져오기) / 정보
 
-import { h, section, field, stepper, toast, modal, chips, toggle, term, googleButton, linkButton } from '../dom.js';
+import { h, section, field, stepper, toast, modal, chips, toggle, term } from '../dom.js';
 import { store, createLocalAdapter, copyAll, COLLECTIONS } from '../../core/store.js';
 import { createGrinder, createServer, SHARE_FORMATS, SHARE_SCOPES } from '../../core/schema.js';
 import { SHARE_FORMAT_WORDS, SHARE_SCOPE_WORDS, WORDS } from '../../core/words.js';
 import { buildExport, parseImport, mergeById } from '../../core/export.js';
 import { logEvent } from '../../core/log.js';
-import { firebaseEnabled, signIn, signOutUser } from '../../platform/firebase.js';
+import { firebaseEnabled, signOutUser } from '../../platform/firebase.js';
 import { APP_VERSION } from '../../config.js';
 import { storageBanner } from './records.js';
 import { estimateUmPerClick } from '../../core/compass.js';
@@ -151,7 +151,8 @@ export function settingsScreen() {
     // 새로 고침 직후 계정 확인 중 — 로그인 버튼을 띄우지 않는다(이미 로그인한 사람에게 로그인을 권하지 않게)
     account = null;
   } else {
-    account = googleButton({ onClick: () => signIn().catch((e) => toast(`로그인 실패: ${e.code ?? e.message}`)) });
+    // 로그인 버튼은 배너 안에 둔다 — 홈과 같은 모양(사용자 요청 9/25)
+    account = null;
   }
 
   return h(
@@ -161,8 +162,8 @@ export function settingsScreen() {
     returnTo === '#/prep'
       ? h('button', { class: 'wide', onClick: () => { sessionStorage.removeItem('nb.returnTo'); location.hash = '#/prep'; } }, '← 준비 화면으로 돌아가기')
       : null,
-    // 설정에서는 배너 안 「로그인」 링크를 빼고 버튼 하나만 둔다(사용자 요청 9/24 — 둘 다 뜨면 과함)
-    section('저장 위치', storageBanner({ loginLink: false }), account),
+    // 로그인 안내와 버튼은 홈과 같은 한 칸(사용자 요청 9/25 — 9/24 에는 배너 밖에 버튼을 따로 뒀다)
+    section('저장 위치', storageBanner(), account),
     section(
       '그라인더',
       h('div', { class: 'hint' }, '영점은 언제든 바꿀 수 있습니다. 이미 저장된 기록은 그때의 영점을 그대로 가집니다.'),
@@ -186,11 +187,7 @@ export function settingsScreen() {
         h('a', { href: 'https://community.unspecialty.com/compass/grinder', target: '_blank', rel: 'noopener' }, '언스페셜티 분쇄도 가이드'),
       ),
     ),
-    section(
-      '레시피',
-      h('div', { class: 'hint' }, 'AI 로 레시피를 추가하거나 직접 입력하고, 추가한 레시피를 고치거나 지웁니다.'),
-      linkButton({ href: '#/recipes', label: '레시피 추가·관리' }),
-    ),
+    // 레시피 추가·관리는 원두 탭의 [원두 | 레시피] 전환으로 옮겼다(사용자 결정 9/25 — 설정에 있으면 애매하다)
     section(
       '서버',
       h('div', { class: 'hint' }, `결과 화면에서 서버 총 무게를 재면 여기 무게를 빼서 ${WORDS.netWeight.label}를 계산합니다.`),

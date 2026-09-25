@@ -1,6 +1,6 @@
 // 추출 흐름: 준비 → 타이머 → 결과
 
-import { h, svg, fill, section, field, stepper, choiceList, chips, modal, toast, toggle, pressButton, term, termOf, tags, fmtDateTime, linkButton } from '../dom.js';
+import { h, svg, fill, section, field, stepper, choiceList, chips, modal, toast, toggle, pressButton, pressable, term, termOf, tags, fmtDateTime, linkButton } from '../dom.js';
 import { planFigure, brewFigure } from '../charts.js';
 import { readCompass, adviseNext, umPerClickFor, lastSurveyed } from '../../core/compass.js';
 import { store, saveActive, loadActive, clearActive } from '../../core/store.js';
@@ -17,6 +17,8 @@ import {
 import { findPrevious, compareTimer } from '../../core/diff.js';
 import { logEvent } from '../../core/log.js';
 import { keepAwake, releaseAwake } from '../../platform/wakelock.js';
+import { brewNotFound, adviceView } from './records.js';
+import { advicePatch, lastAdvised } from '../../core/adviceImport.js';
 
 // 문장 끝(. ! ?) 다음의 띄어쓰기를 줄바꿈으로
 export function sentenceLines(text) {
@@ -196,6 +198,7 @@ export function prepScreen() {
           advice ? advice.text : `레시피 기준 원두량입니다. 기준으로 먼저 내린 뒤 바꿔 가며 비교하세요.`),
       ),
       adviceCard(recipe, grinder),
+      aiAdviceCard(recipe, grinder),
       section(
         '분쇄',
         grinders.length
@@ -321,6 +324,7 @@ export function prepScreen() {
         patch.iceG = null;
       }
       logEvent('advice.apply', {
+        source: 'compass',
         fromBrewId: prev.id, grindUm: adv.grindUm, clicks: adv.clicks, doseDeltaG: adv.doseDeltaG,
         dial: { from: d.dial, to: patch.dial ?? d.dial }, doseG: { from: d.doseG, to: patch.doseG ?? d.doseG }, waterG: patch.ratio != null ? prev.conditions.hotWaterG : null,
       });
@@ -338,6 +342,31 @@ export function prepScreen() {
         : null,
       upc ? h('div', { class: 'source' }, `클릭당 약 ${upc.value}µm (${upc.source === 'manual' ? '설정에 적은 값' : `기록 ${upc.n}건으로 추정`})`) : null,
       actionable ? h('button', { type: 'button', onClick: apply }, '제안대로 맞추기') : null,
+    );
+  }
+
+  // AI 제안(9/25 — 기록 화면 「AI 제안」에 넣은 것): 같은 레시피(원두를 골랐으면 같은 원두)의 가장 최근 AI 제안.
+  // [AI 제안대로 맞추기]는 그 기록의 값에서 출발한다. 다이얼은 같은 그라인더일 때만 바꾼다(core/adviceImport.js advicePatch).
+  function aiAdviceCard(recipe, grinder) {
+    const from = lastAdvised(store.brews(), { recipeId: recipe.id, beanId: d.beanId });
+    if (!from) return null;
+    const a = from.aiAdvice;
+    const { patch, dialSkipped } = advicePatch(a, from, { grinderId: grinder?.id ?? null });
+    const apply = () => {
+      logEvent('advice.apply', {
+        source: 'ai', fromBrewId: from.id, dialSkipped,
+        dial: { from: d.dial, to: patch.dial ?? d.dial }, doseG: { from: d.doseG, to: patch.doseG ?? d.doseG },
+        waterG: a.next.hotWaterG ?? null, tempC: { from: d.tempC, to: patch.tempC ?? d.tempC },
+      });
+      set(patch);
+      toast('AI 제안대로 맞췄습니다.');
+    };
+    return section(
+      'AI 제안',
+      h('div', { class: 'hint' }, `${fmtDateTime(from.timer.startedAt)} 추출에 넣은 AI 답 기준`),
+      ...adviceView(a, from),
+      dialSkipped ? h('div', { class: 'hint' }, '제안이 달린 기록과 그라인더가 달라 다이얼은 바꾸지 않습니다.') : null,
+      Object.keys(patch).length ? h('button', { type: 'button', onClick: apply }, 'AI 제안대로 맞추기') : null,
     );
   }
 
@@ -420,7 +449,7 @@ function saveFinished(active, state, now, navigate = true) {
   const { plan, brewId } = active;
   const timer = summarize(state, plan);
   const brew = createBrew({ id: brewId, recipe: active.recipe, plan, prep: active.prep, timer, now: state.startedAt });
-  logEvent('brew.end', { totalSec: timer.totalSec, plannedTotalSec: timer.plannedTotalSec, deltaSec: round1(timer.totalSec - timer.plannedTotalSec), verdict: timingVerdict(timer.totalSec - timer.plannedTotalSec).kind }, { brewId, now });
+  logEvent('brew.end', { totalSec: timer.totalSec, plannedTotalSec: timer.plannedTotalSec, deltaSec: round1(timer.totalSec - timer.plannedTotalSec), verdict: timingVerdict(timer.totalSec - timer.plannedTotalSec).kind, via: state.endVia ?? null }, { brewId, now });
   store.put('brews', brew);
   logEvent('brew.saved', { where: store.mode }, { brewId });
   clearActive();
@@ -489,17 +518,16 @@ export function timerScreen() {
   const infoText = h('span');
   const undoBtn = h('button', { type: 'button', class: 'undo-btn', onClick: onUndo }, '되돌리기');
   const info = h('div', { class: 'press-info hidden', role: 'status' }, infoText, undoBtn);
-  const readyNote = h('div', { class: 'hint center' }, '물을 붓기 시작할 때 [시작]을 누르세요.', h('br'), '추출이 끝나면 자동으로 저장됩니다.');
-  const nextBtn = pressButton({
-    label: '다음 푸어 ›',
-    className: 'primary big',
-    onPress: () => (state.status === 'ready' ? onStart() : onNext()),
-    onAbort: () => {
-      const button = state.status === 'ready' ? 'start' : view(state, plan, Date.now()).isLast ? 'end' : 'next';
-      logEvent('brew.pressAbort', { button, stepIndex: state.stepIndex }, { brewId });
-      toast(button === 'start' ? '밀어서 취소했습니다. 시작하지 않았어요.' : '밀어서 취소했습니다. 넘기지 않았어요.');
-    },
-  });
+  const readyNote = h('div', { class: 'hint center' }, '물을 붓기 시작할 때 [시작]이나 원을 누르세요.', h('br'), '추출이 끝나면 자동으로 저장됩니다.');
+  // 주 동작(시작 · 다음 푸어 · 종료): 아래 버튼과 원 전체가 같은 일을 한다(사용자 요청 9/25 — 붓는 중에 아래 버튼을 찾기 어렵다).
+  // via = 어디를 눌렀나(button|ring) — 로그로 어느 쪽을 쓰는지 본다
+  const primary = (via) => (state.status === 'ready' ? onStart(via) : onNext(via));
+  const aborted = (via) => {
+    const button = state.status === 'ready' ? 'start' : view(state, plan, Date.now()).isLast ? 'end' : 'next';
+    logEvent('brew.pressAbort', { button, via, stepIndex: state.stepIndex }, { brewId });
+    toast(button === 'start' ? '밀어서 취소했습니다. 시작하지 않았어요.' : '밀어서 취소했습니다. 넘기지 않았어요.');
+  };
+  const nextBtn = pressButton({ label: '다음 푸어 ›', className: 'primary big', onPress: () => primary('button'), onAbort: () => aborted('button') });
   const cancelBtn = h('button', { class: 'big', onClick: () => (state.status === 'ready' ? onBack() : onCancel()) }, '취소');
   // 방치 확인 창(넷플릭스 「아직 보고 계신가요?」 방식)
   const stillText = h('p');
@@ -516,12 +544,31 @@ export function timerScreen() {
   );
   let askedAt = null; // 같은 질문을 로그에 한 번만 남기려고
   let stopped = false;
+  // 원 전체 = 누름 영역(버튼과 같은 규칙: 뗄 때 실행, 밖으로 밀면 취소). 누르면 살짝 눌리고 누른 자리에서 물결이 퍼진다.
+  const ringWrap = h('div', { class: 'ring-wrap press-ring', role: 'button', tabindex: 0, 'aria-label': '시작' }, ring, h('div', { class: 'ring-center' }, num, sub, pourNow, stepName));
+  pressable(ringWrap, {
+    onPress: () => primary('ring'),
+    onAbort: () => aborted('ring'),
+    disabled: () => state.status === 'ended' || state.status === 'cancelled',
+    onDown: (e) => {
+      const r = ringWrap.getBoundingClientRect();
+      const ripple = h('span', { class: 'ring-ripple', style: `left:${e.clientX - r.left}px;top:${e.clientY - r.top}px` });
+      ringWrap.append(ripple);
+      ripple.addEventListener('animationend', () => ripple.remove());
+    },
+  });
+  ringWrap.addEventListener('keydown', (e) => {
+    if ((e.key === 'Enter' || e.key === ' ') && state.status !== 'ended') {
+      e.preventDefault();
+      primary('ring');
+    }
+  });
   const root = h(
     'div',
     { class: 'screen timer' },
     h('div', { class: 'timer-head' }, h('div', { class: 'recipe-name' }, active.recipe.name), elapsed),
     totalBar,
-    h('div', { class: 'ring-wrap' }, ring, h('div', { class: 'ring-center' }, num, sub, pourNow, stepName)),
+    ringWrap,
     target,
     hint,
     next,
@@ -530,6 +577,15 @@ export function timerScreen() {
     h('div', { class: 'row' }, cancelBtn, nextBtn),
     still,
   );
+
+  // 원 안의 큰 숫자가 바뀔 때 살짝 올라오며 바뀐다(사용자 결정 9/25 — 시각 요소 「숫자 바뀜」). 같은 숫자면 그대로 둔다.
+  function setNum(t) {
+    if (num.textContent === t) return;
+    num.textContent = t;
+    num.classList.remove('tick');
+    void num.offsetWidth; // 애니메이션을 처음부터 다시
+    num.classList.add('tick');
+  }
 
   const canUndo = (now) => state.status === 'ended' || (undoStack.length > 0 && now - undoStack[undoStack.length - 1].at < UNDO_MS);
   function showInfo(text, kind) {
@@ -564,7 +620,7 @@ export function timerScreen() {
       // 대기: 시간은 0에 멈춰 있고, 첫 단계에서 할 일만 보인다
       elapsed.textContent = formatSec(0);
       totalFill.style.width = '0%';
-      num.textContent = String(Math.ceil(v.remainingSec));
+      setNum(String(Math.ceil(v.remainingSec)));
       sub.textContent = '초 동안';
       pourNow.textContent = '';
       arc.setAttribute('stroke-dashoffset', '0');
@@ -585,16 +641,17 @@ export function timerScreen() {
     totalBar.classList.toggle('over', v.elapsed > plan.endSec);
     totalBar.setAttribute('aria-valuenow', String(Math.floor(v.elapsed)));
     if (ended) {
-      num.textContent = '종료';
+      setNum('종료');
       sub.textContent = '';
     } else if (v.overSec > 0) {
-      num.textContent = `+${Math.floor(v.overSec)}`;
+      setNum(`+${Math.floor(v.overSec)}`);
       sub.textContent = '초 지남';
     } else {
-      num.textContent = String(Math.ceil(v.remainingSec));
+      setNum(String(Math.ceil(v.remainingSec)));
       sub.textContent = '초 남음';
     }
     root.classList.toggle('over', !ended && v.overSec > 0);
+    ringWrap.setAttribute('aria-label', ended ? '종료됨' : v.isLast ? '종료' : '다음 푸어');
     arc.setAttribute('stroke-dashoffset', String(C * v.progress));
     stepName.textContent = v.step.label;
     // 붓는 구간: 목표 g을 파스텔 빨강으로 은은하게 강조하고, 고르게 부을 때의 «지금쯤 저울 값»과 속도를 함께 보인다.
@@ -629,7 +686,7 @@ export function timerScreen() {
   }
 
   // [시작]: 이 순간부터 잰다. 준비 화면에서 넘어온 뒤 기다린 시간(readySec)도 남긴다 — 준비와 붓기 사이가 얼마나 벌어지나.
-  function onStart() {
+  function onStart(via = 'button') {
     if (state.status !== 'ready') return;
     const now = Date.now();
     state = startBrew(now);
@@ -637,7 +694,7 @@ export function timerScreen() {
     const p = active.prep;
     logEvent('brew.start', {
       recipeId: active.recipeId, doseG: plan.doseG, hotWaterG: plan.hotWaterG, iceG: plan.iceG, iceTargetG: plan.iceTargetG, dripper: p.dripper,
-      ratio: Math.round(plan.ratioHot * 10) / 10, customRatio: Boolean(active.customRatio), readySec: active.readyAt ? round1((now - active.readyAt) / 1000) : null,
+      ratio: Math.round(plan.ratioHot * 10) / 10, customRatio: Boolean(active.customRatio), readySec: active.readyAt ? round1((now - active.readyAt) / 1000) : null, via,
     }, { brewId, now });
     tick();
   }
@@ -651,11 +708,12 @@ export function timerScreen() {
     location.hash = '#/prep';
   }
 
-  function onNext() {
+  function onNext(via = 'button') {
     if (state.status !== 'running') return;
     const now = Date.now();
     const from = state.stepIndex;
     state = advance(state, plan, now);
+    if (state.status === 'ended') state = { ...state, endVia: via }; // brew.end 로그에 남긴다
     undoStack.push({ at: now });
     saveActive({ ...active, state });
     if (state.status === 'ended') {
@@ -671,7 +729,7 @@ export function timerScreen() {
       const actualSec = state.stepStartsSec[to];
       const plannedSec = plan.steps[to].startSec;
       const vd = timingVerdict(actualSec - plannedSec);
-      logEvent('brew.step', { from: plan.steps[from].label, to: plan.steps[to].label, plannedSec, actualSec, deltaSec: round1(actualSec - plannedSec), verdict: vd.kind }, { brewId, now });
+      logEvent('brew.step', { from: plan.steps[from].label, to: plan.steps[to].label, plannedSec, actualSec, deltaSec: round1(actualSec - plannedSec), verdict: vd.kind, via }, { brewId, now });
       showInfo(`${plan.steps[to].label} 시작 · ${vd.text} (레시피 ${formatSec(plannedSec)})`, vd.kind);
     }
     tick();
@@ -728,7 +786,7 @@ export function timerScreen() {
   }
 
   tick();
-  const timerId = setInterval(tick, 200);
+  const timerId = setInterval(tick, 100); // 붓는 동안의 저울 값이 부드럽게 오르게 0.1초마다(9/25, 전 0.2초)
   keepAwake();
   return {
     node: root,
@@ -782,7 +840,7 @@ export function comparisonBlock(b) {
 
 export function resultScreen(id) {
   const b = store.get('brews', id);
-  if (!b) return h('div', { class: 'screen' }, '기록을 찾을 수 없습니다.');
+  if (!b) return brewNotFound();
   const root = h('div', { class: 'screen' });
   const save = (field, value) => {
     b.result[field] = value;

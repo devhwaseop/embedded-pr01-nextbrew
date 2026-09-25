@@ -286,50 +286,59 @@ export function levelSlider({ label, words, ticks = words, value, onChange }) {
   return h('div', { class: 'scale-row', style: `--n:${words.length}` }, h('div', { class: 'row between' }, label, off), range, h('div', { class: 'ticks' }, ...ticks.map((t) => h('span', null, t))), word);
 }
 
-export function pressButton({ label, className = '', onPress, onAbort }) {
-  const text = h('span', null, label);
-  const btn = h('button', { type: 'button', class: `press ${className}` }, text);
-  let base = label;
+// 뗄 때 실행하는 누름 영역(연타·실수 대책, 사용자 결정 9/24): 누르면 .pressing, 손가락을 밖으로 밀면 .abort 이고 놓으면 취소.
+// 버튼(pressButton)과 타이머 원(9/25 — 원 전체를 눌러도 같은 동작)이 함께 쓴다.
+// onDown(e) = 누른 순간(원의 물결 효과 등), onOutside(밖인가) = 밖으로 밀었다 돌아왔다 할 때, disabled() = 지금 막혀 있나
+export function pressable(el, { onPress, onAbort, onDown, onOutside, disabled = () => el.disabled }) {
   let pid = null;
   let outside = false;
-  const MARGIN = 8; // 버튼 가장자리에서 손가락이 조금 흔들린 것은 밖으로 보지 않는다
+  const MARGIN = 8; // 가장자리에서 손가락이 조금 흔들린 것은 밖으로 보지 않는다
   const isInside = (e) => {
-    const r = btn.getBoundingClientRect();
+    const r = el.getBoundingClientRect();
     return e.clientX >= r.left - MARGIN && e.clientX <= r.right + MARGIN && e.clientY >= r.top - MARGIN && e.clientY <= r.bottom + MARGIN;
   };
   const reset = () => {
     pid = null;
+    if (outside) onOutside?.(false);
     outside = false;
-    btn.classList.remove('pressing', 'abort');
-    text.textContent = base;
+    el.classList.remove('pressing', 'abort');
   };
-  btn.addEventListener('pointerdown', (e) => {
-    if (btn.disabled || e.button !== 0) return;
+  el.addEventListener('pointerdown', (e) => {
+    if (disabled() || e.button !== 0) return;
     pid = e.pointerId;
     outside = false;
-    btn.setPointerCapture?.(pid); // 밖으로 밀어도 계속 움직임을 받는다
-    btn.classList.add('pressing');
+    el.setPointerCapture?.(pid); // 밖으로 밀어도 계속 움직임을 받는다
+    el.classList.add('pressing');
+    onDown?.(e);
   });
-  btn.addEventListener('pointermove', (e) => {
+  el.addEventListener('pointermove', (e) => {
     if (e.pointerId !== pid) return;
     const o = !isInside(e);
     if (o === outside) return;
     outside = o;
-    btn.classList.toggle('abort', o);
-    text.textContent = o ? '놓으면 취소' : base;
+    el.classList.toggle('abort', o);
+    onOutside?.(o);
   });
-  btn.addEventListener('pointerup', (e) => {
+  el.addEventListener('pointerup', (e) => {
     if (e.pointerId !== pid) return;
     const aborted = outside;
     reset();
     if (aborted) onAbort?.();
     else onPress();
   });
-  btn.addEventListener('pointercancel', (e) => e.pointerId === pid && reset());
-  btn.addEventListener('click', (e) => e.detail === 0 && !btn.disabled && onPress());
+  el.addEventListener('pointercancel', (e) => e.pointerId === pid && reset());
+  return { pressing: () => pid != null };
+}
+
+export function pressButton({ label, className = '', onPress, onAbort }) {
+  const text = h('span', null, label);
+  const btn = h('button', { type: 'button', class: `press ${className}` }, text);
+  let base = label;
+  const p = pressable(btn, { onPress, onAbort, onOutside: (o) => (text.textContent = o ? '놓으면 취소' : base) });
+  btn.addEventListener('click', (e) => e.detail === 0 && !btn.disabled && onPress()); // 키보드(Enter·Space)
   btn.setLabel = (t) => {
     base = t;
-    if (pid == null) text.textContent = t;
+    if (!p.pressing()) text.textContent = t;
   };
   return btn;
 }
@@ -346,6 +355,16 @@ const G_LOGO = [
 export function googleButton({ label = 'Google 계정으로 로그인', onClick }) {
   const logo = svg('svg', { viewBox: '0 0 118 120', width: '18', height: '18.3', 'aria-hidden': 'true', class: 'g-logo' }, ...G_LOGO.map(([fill, d]) => svg('path', { d, fill })));
   return h('button', { type: 'button', class: 'google-btn', onClick }, logo, h('span', null, label));
+}
+
+// 글 복사: 성공하면 true. 클립보드가 막힌 브라우저면 false — 부르는 쪽이 글을 보여 주고 길게 눌러 복사하게 한다.
+export async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function toast(msg) {

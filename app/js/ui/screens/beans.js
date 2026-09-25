@@ -14,6 +14,15 @@ import { beanFacts } from '../../core/facts.js';
 import { suggestNotes } from '../../core/suggest.js';
 import { logEvent } from '../../core/log.js';
 import { loadDraft, saveDraft } from './brew.js';
+import { icon } from '../icons.js';
+
+// 원두 탭 위의 [원두 | 레시피] 전환(사용자 결정 9/25 — 원두와 레시피는 둘 다 가끔 등록·수정하는 «추출 준비물»이라 한 탭에).
+// 각 칸은 주소(#/beans · #/recipes)로 가서, 옮길 때 탭처럼 옆으로 넘어간다(main.js · ui/tabSlide.js).
+export function beansSegment(active) {
+  const seg = (href, name, label, on) =>
+    h('a', { href, class: `seg${on ? ' on' : ''}`, role: 'tab', 'aria-selected': String(on) }, icon(name), h('span', null, label));
+  return h('div', { class: 'segment', role: 'tablist', 'aria-label': '원두와 레시피' }, seg('#/beans', 'bean', '원두', active === 'beans'), seg('#/recipes', 'book', '레시피', active === 'recipes'));
+}
 
 const rerender = () => window.dispatchEvent(new HashChangeEvent('hashchange'));
 
@@ -56,7 +65,8 @@ export function beansScreen() {
   return h(
     'div',
     { class: 'screen' },
-    h('h1', null, '원두'),
+    beansSegment('beans'),
+    h('h1', { class: 'sr-only' }, '원두'),
     h('a', { class: 'button primary wide', href: '#/bean/new' }, '＋ 원두 등록'),
     ...active.filter((b) => beanStock(b, brews).low).map((b) => lowBeanNotice(b, brews, 'list')),
     ...active.map((b) => beanRow(b, brews)),

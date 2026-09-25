@@ -10,6 +10,7 @@ import { store } from '../../core/store.js';
 import { SURVEY_ITEMS, INTENSITY_WORDS, LIKING_WORDS, OFF_FLAVORS, NOTE_PERCEPTION, FLAVOR_CHIPS, emptySurvey } from '../../core/schema.js';
 import { logEvent } from '../../core/log.js';
 import { timerTable, conditionsList } from './brew.js';
+import { brewNotFound } from './records.js';
 import { fmtDateTime } from '../dom.js';
 
 function noteToggle(label, note, onNote) {
@@ -70,7 +71,7 @@ function scaleRow({ label, words, value, onChange, note, onNote }) {
 
 export function surveyScreen(id) {
   const b = store.get('brews', id);
-  if (!b) return h('div', { class: 'screen' }, '기록을 찾을 수 없습니다.');
+  if (!b) return brewNotFound();
   const s = structuredClone(b.survey ?? emptySurvey());
   const bean = b.bean?.id ? store.get('beans', b.bean.id) : null;
   const detail = h('div', { class: 'hidden' }, timerTable(b), conditionsList(b));

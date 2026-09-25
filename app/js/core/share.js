@@ -6,6 +6,7 @@
 import { SCHEMA_VERSION, formatSec } from './schema.js';
 import { APP_NAME } from './export.js';
 import { beanKey } from './diff.js';
+import { adviceFormatText } from './adviceImport.js';
 import { conditionRows, stepRows, surveyRows } from './facts.js';
 import { WORDS } from './words.js';
 import { formatRatio } from './recipe.js';
@@ -85,13 +86,18 @@ export function defaultSharePrompt() {
     '- 한 번에 한두 가지만 바꿉니다. 분쇄(굵게·가늘게 — 그라인더 클릭이나 µm), 원두량(물은 그대로), 물 온도 중에서 고르고, 얼마나 바꿀지 숫자로 적어 주세요.',
     '- 제안마다 기록의 어떤 값(맛 설문·타이머·조건)을 근거로 했는지 적어 주세요.',
     '- 기록에 없는 값은 지어내지 말고, 판단에 꼭 필요한 정보가 빠졌으면 먼저 물어봐 주세요.',
+    '',
+    // 결과를 앱으로 가져오기(사용자 결정 9/25 「둘 다」): 형식은 처음부터 주고, 결론이 나면 한 번만 묻는다
+    '결론이 나면 대화 끝에 한 번만 「앱에 넣을 결과(JSON)를 드릴까요?」라고 물어봐 주세요. 제가 달라고 하면 아래 형식으로 주세요.',
+    '',
+    adviceFormatText(),
   ].join('\n');
 }
 
-// 공유창(navigator.share)용 이름: nextbrew-20260925-0712.md → nextbrew-20260925-0712-md.txt
-// 크롬은 허용 목록에 없는 .md·.json 파일 공유를 막는다(9/25 — screens/share.js 머리말). 내용 형식은 이름에 남긴다.
+// 공유창(navigator.share)용 이름: nextbrew-20260925-0712.md → nextbrew-20260925-0712(md).txt (사용자 요청 9/25 — 괄호 표기)
+// 크롬은 허용 목록에 없는 .md·.json 파일 공유를 막는다(9/25 — screens/share.js 머리말). 내용 형식은 괄호 안에 남긴다.
 export function shareSheetName(name) {
-  return name.replace(/\.(md|json)$/, '-$1.txt');
+  return name.replace(/\.(md|json)$/, '($1).txt');
 }
 
 export function shareFileName(pkg, format) {
@@ -133,7 +139,8 @@ export function toMarkdown(pkg) {
   );
 
   for (const b of pkg.brews) {
-    out.push(`## ${b.roles.map((r) => SHARE_ROLES[r]).join(' · ')}`, '', brewTitle(b), '');
+    // 기록 ID: AI 가 앱에 넣을 결과(JSON)의 brewId 로 그대로 옮겨 적는다(9/25 — AI 제안 가져오기가 기록을 맞춰 본다)
+    out.push(`## ${b.roles.map((r) => SHARE_ROLES[r]).join(' · ')}`, '', brewTitle(b), '', `기록 ID: ${b.id}`, '');
     // 글로만 읽히므로 부가 설명을 괄호로 붙인다: 「가수 (추출 후 추가한 물)」
     out.push('### 조건', '', table(['항목', '값'], conditionRows(b).map(([k, v, sub]) => [sub ? `${k} (${sub})` : k, v])), '');
     out.push(
