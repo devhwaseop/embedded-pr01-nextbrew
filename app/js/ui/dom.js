@@ -1,5 +1,7 @@
 // 작은 DOM 도우미와 공용 위젯. 디자인은 나중에 바꿀 예정이라 구조만 잡는다.
 
+import { parseDay, formatDay, daysSince } from '../core/schema.js';
+
 export function h(tag, props, ...children) {
   const el = document.createElement(tag);
   for (const [k, v] of Object.entries(props ?? {})) {
@@ -15,6 +17,31 @@ export function h(tag, props, ...children) {
     el.append(c instanceof Node ? c : String(c));
   }
   return el;
+}
+
+// 자식 바꾸기 — 앱은 replaceChildren 을 직접 쓰지 않고 이것만 쓴다(tests/app-files.test.mjs 가 막는다).
+// DOM 의 replaceChildren 은 null 을 건너뛰지 않고 「null」 글자로 넣는다 — 9/24 세 번(원두 노트·타이머·준비 화면) 화면에 찍혔다.
+export function fill(el, ...children) {
+  el.replaceChildren(...children.flat(Infinity).filter((c) => c != null && c !== false).map((c) => (c instanceof Node ? c : String(c))));
+  return el;
+}
+
+// 화면 이동·바깥 링크 버튼(사용자 요청 9/24 — 밑줄 글자 링크 대신 보조 버튼 모양으로 통일).
+// 앱 안으로 가면 「›」, 바깥 사이트(새 창)면 「↗」 — 화살표는 화면 읽기 프로그램에 읽히지 않게 하고, 새 창은 글로 알린다.
+export function linkButton({ href, label, external = false, returnToPrep = false }) {
+  return h(
+    'a',
+    {
+      class: 'button wide link-action',
+      href,
+      target: external ? '_blank' : null,
+      rel: external ? 'noopener' : null,
+      onClick: returnToPrep ? () => sessionStorage.setItem('nb.returnTo', '#/prep') : null,
+    },
+    h('span', null, label),
+    h('span', { class: 'link-arrow', 'aria-hidden': 'true' }, external ? '↗' : '›'),
+    external ? h('span', { class: 'sr-only' }, ' (새 창)') : null,
+  );
 }
 
 // SVG 요소(타이머 링). 글은 모두 텍스트 노드로 넣는다 — 사용자가 적은 글이 HTML로 해석되지 않게.
@@ -70,6 +97,50 @@ export function stepper({ value, step = 1, min = 0, max = 9999, unit = '', prefi
   );
 }
 
+// 날짜 칸(사용자 요청 9/25): 숫자 칸과 같은 [−] 날짜 [+] 모양. −/+ 는 하루씩, 가운데를 누르면 기기의 달력이 뜬다.
+// value = 'YYYY-MM-DD' 또는 null(비움). 비어 있을 때 −/+ 는 start(처음 값 = 오늘)에서 출발한다.
+// 아래 줄에 오늘 기준으로 며칠 전·뒤인지와 [비우기](모르는 날짜·아직 안 뜯은 봉투)를 둔다.
+export function today() {
+  return formatDay(new Date());
+}
+export function dateStepper({ value, onChange, start = null, clearable = true }) {
+  let v = value ?? null;
+  const input = h('input', { type: 'date', class: 'stepper-input date-input', value: v ?? '' });
+  const rel = h('span');
+  const clear = clearable ? h('button', { type: 'button', class: 'inline-btn quiet' }, '비우기') : null;
+  const paint = () => {
+    const n = daysSince(v);
+    rel.textContent = v == null ? '비어 있음 · −/+ 를 누르면 오늘부터' : n === 0 ? '오늘' : n > 0 ? `${n}일 전` : `${-n}일 뒤`;
+    clear?.classList.toggle('hidden', v == null);
+  };
+  const set = (nv) => {
+    v = nv;
+    input.value = v ?? '';
+    paint();
+    onChange(v);
+  };
+  const shift = (days) => {
+    const d = parseDay(v ?? start ?? today());
+    d.setDate(d.getDate() + days);
+    set(formatDay(d));
+  };
+  input.addEventListener('change', () => set(input.value || null));
+  clear?.addEventListener('click', () => set(null));
+  paint();
+  return h(
+    'div',
+    { class: 'date-field' },
+    h(
+      'div',
+      { class: 'stepper' },
+      h('button', { type: 'button', onClick: () => shift(-1), 'aria-label': '하루 앞으로' }, '−'),
+      input,
+      h('button', { type: 'button', onClick: () => shift(1), 'aria-label': '하루 뒤로' }, '+'),
+    ),
+    h('div', { class: 'hint row-line' }, rel, clear),
+  );
+}
+
 // 목록에서 고르기 + 「직접 입력…」
 export function choiceList({ options, value, onChange, customLabel = '직접 입력…' }) {
   const opts = [...new Set([...options, ...(value && !options.includes(value) ? [value] : [])])];
@@ -99,7 +170,8 @@ export function chips({ options, selected, multi = false, onChange, describe = n
   let sel = multi ? new Set(selected ?? []) : selected ?? null;
   const wrap = h('div', { class: 'chips' });
   const draw = () => {
-    wrap.replaceChildren(
+    fill(
+      wrap,
       ...options.map((o) => {
         const on = multi ? sel.has(o) : sel === o;
         return h(
@@ -145,7 +217,8 @@ export function tagEditor({ options, selected, onChange, placeholder = '직접 �
       draw();
     };
     input.addEventListener('keydown', (e) => e.key === 'Enter' && (e.preventDefault(), add()));
-    wrap.replaceChildren(
+    fill(
+      wrap,
       chips({ options: opts, selected: sel, multi: true, onChange: (v) => { sel = v; onChange([...sel]); } }),
       h('div', { class: 'row' }, input, h('button', { type: 'button', onClick: add }, '추가')),
     );
@@ -176,6 +249,43 @@ export function toggle({ checked, label, sub = null, onChange }) {
 // - 누를 때가 아니라 손을 뗄 때 onPress 를 부른다.
 // - 누른 채 버튼 밖으로 밀면 「놓으면 취소」로 바뀌고, 그대로 떼면 실행하지 않고 onAbort 를 부른다.
 // - 키보드(Enter·Space)는 click 으로만 들어오므로(detail 0) 그때만 click 을 쓴다.
+// 슬라이더 칠하기: 손잡이 왼쪽을 앱 색으로 채운다(CSS 가 --p = 0~1 을 읽는다 — 9/25 슬라이더 모양을 직접 그리면서)
+export function paintScale(range) {
+  const n = Number(range.max) - Number(range.min);
+  range.style.setProperty('--p', String(n > 0 ? (Number(range.value) - Number(range.min)) / n : 0));
+}
+
+// 단계 슬라이더(9/25 — 원두 배전도). 맛 설문의 슬라이더와 같은 배치: [이름 · 선택 안 함] / 슬라이더 / 눈금 / 고른 단어.
+// value = 1부터 센 단계, null = 선택 안 함(가운데 값으로 저장하지 않는다). ticks = 눈금에 쓸 짧은 말(없으면 words).
+export function levelSlider({ label, words, ticks = words, value, onChange }) {
+  let level = value ?? null;
+  const range = h('input', { type: 'range', min: 1, max: words.length, step: 1, value: level ?? Math.ceil(words.length / 2), class: 'scale', 'aria-label': words.join('·') });
+  const word = h('div', { class: 'scale-word' });
+  const off = h('button', { type: 'button', class: 'chip' }, '선택 안 함');
+  const paint = () => {
+    range.classList.toggle('off', level == null);
+    off.classList.toggle('on', level == null);
+    word.textContent = level == null ? '선택 안 함' : words[level - 1];
+    paintScale(range);
+  };
+  const take = () => {
+    level = Number(range.value);
+    paint();
+    onChange(level);
+  };
+  // 「선택 안 함」 상태에서 가운데를 그냥 눌러도 값이 들어가도록 click 도 받는다
+  range.addEventListener('input', take);
+  range.addEventListener('click', take);
+  off.addEventListener('click', () => {
+    level = null;
+    paint();
+    onChange(null);
+  });
+  paint();
+  // --n = 단계 수: 눈금 단어를 슬라이더의 각 칸 위치에 맞추는 데 쓴다(CSS .scale-row)
+  return h('div', { class: 'scale-row', style: `--n:${words.length}` }, h('div', { class: 'row between' }, label, off), range, h('div', { class: 'ticks' }, ...ticks.map((t) => h('span', null, t))), word);
+}
+
 export function pressButton({ label, className = '', onPress, onAbort }) {
   const text = h('span', null, label);
   const btn = h('button', { type: 'button', class: `press ${className}` }, text);

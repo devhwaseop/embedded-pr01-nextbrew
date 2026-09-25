@@ -6,7 +6,7 @@
 
 import { setLogSink, logEvent } from './log.js';
 
-export const COLLECTIONS = ['brews', 'beans', 'grinders', 'servers'];
+export const COLLECTIONS = ['brews', 'beans', 'grinders', 'servers', 'recipes']; // recipes: 가져온 레시피(9/24)
 
 export function createLocalAdapter(storage = globalThis.localStorage, prefix = 'nb') {
   const key = (name) => `${prefix}.${name}`;
@@ -169,7 +169,7 @@ export async function copyAll(from, to) {
   const newLogs = logs.filter((l) => !have.has(`${l.t}|${l.ev}`));
   for (const c of COLLECTIONS) for (const d of data[c] ?? []) to.put(c, d);
   for (const l of newLogs) to.appendLog(l);
-  return { brews: data.brews.length, beans: data.beans.length, grinders: data.grinders.length, servers: data.servers?.length ?? 0, logs: newLogs.length, logsSkipped: logs.length - newLogs.length };
+  return { brews: data.brews.length, beans: data.beans.length, grinders: data.grinders.length, servers: data.servers?.length ?? 0, recipes: data.recipes?.length ?? 0, logs: newLogs.length, logsSkipped: logs.length - newLogs.length };
 }
 
 // 계정 모드에서 «이 기기에만 있는» 기록 수 — 이 기기 저장소에는 있는데 지금 저장소(계정)에 같은 id 가 없는 것.

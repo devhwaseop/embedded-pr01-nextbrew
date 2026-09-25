@@ -1,6 +1,6 @@
 // NextBrew 진입점 — 화면 전환(해시 라우팅), 하단 메뉴, 시작 처리
 
-import { h } from './ui/dom.js';
+import { h, fill } from './ui/dom.js';
 import { icon } from './ui/icons.js';
 import { store, createLocalAdapter, loadActive, copyAll } from './core/store.js';
 import { logEvent } from './core/log.js';
@@ -12,6 +12,7 @@ import { homeScreen, historyScreen, detailScreen } from './ui/screens/records.js
 import { shareScreen } from './ui/screens/share.js';
 import { beansScreen, beanFormScreen } from './ui/screens/beans.js';
 import { settingsScreen, applyDisplaySettings } from './ui/screens/settings.js';
+import { recipesScreen } from './ui/screens/recipes.js';
 
 const ROUTES = [
   [/^#?\/?$/, homeScreen],
@@ -25,6 +26,7 @@ const ROUTES = [
   [/^#\/beans$/, beansScreen],
   [/^#\/bean\/([^/]+)$/, beanFormScreen],
   [/^#\/settings$/, settingsScreen],
+  [/^#\/recipes$/, recipesScreen],
 ];
 
 // 아래 탭: 아이콘만 보이고(사용자 요청 9/24) 이름은 화면 읽기 프로그램용으로 숨겨 둔다
@@ -61,8 +63,8 @@ function render() {
     cleanup = out instanceof Node ? null : out.cleanup ?? null;
     const hideNav = !(out instanceof Node) && out.hideNav;
     applyDisplaySettings();
-    // replaceChildren 은 null 을 건너뛰지 않고 「null」 글자로 넣는다 — 탭을 숨길 때는 아예 넘기지 않는다
-    root.replaceChildren(...(hideNav ? [node] : [node, nav(hash)]));
+    // 탭을 숨기는 화면은 null 을 넘긴다 — fill() 이 빈 자리를 거른다
+    fill(root, node, hideNav ? null : nav(hash));
     window.scrollTo(0, 0);
     return;
   }

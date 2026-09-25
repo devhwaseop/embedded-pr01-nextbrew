@@ -3,9 +3,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { formatGrind, grindActual, formatSec, formatDelta, createBrew, emptySurvey, timingVerdict, netServerWeight, SURVEY_ITEMS } from '../app/js/core/schema.js';
+import { measuredDilution, dilutionView, createBean, beanAutoName, beanNameIsAuto, purchasedGrams, beanStock, roastedFromBestBefore, daysSince, ROASTS } from '../app/js/core/schema.js';
 import { buildPlan, scaleAdvice, stepHint } from '../app/js/core/recipe.js';
-import { startBrew, view, advance, undoAdvance, cancel, summarize, presence, acknowledge, checkAfterSec } from '../app/js/core/timer.js';
-import { buildSharePackage, findShareRelations, toMarkdown, toJSON, shareFileName } from '../app/js/core/share.js';
+import { startBrew, readyBrew, elapsedSec, view, advance, undoAdvance, cancel, summarize, presence, acknowledge, checkAfterSec } from '../app/js/core/timer.js';
+import { buildSharePackage, findShareRelations, toMarkdown, toJSON, shareFileName, shareSheetName, defaultSharePrompt, SHARE_ROLES } from '../app/js/core/share.js';
 import { stepRows, conditionRows } from '../app/js/core/facts.js';
 import { endStateLabel } from '../app/js/core/words.js';
 import { findPrevious, compareTimer, sideBySide } from '../app/js/core/diff.js';
@@ -17,6 +18,7 @@ import { findPreset } from '../app/js/data/presets.js';
 import { readCompass, adviseNext, estimateUmPerClick, umPerClickFor, lastSurveyed } from '../app/js/core/compass.js';
 import { planPoints, brewPlanPoints, brewActualPoints, planBars } from '../app/js/core/chart.js';
 import { recipeTags } from '../app/js/core/recipe.js';
+import { toImportFormat, readRecipeText, validateRecipeImport, recipePrompt, blankRecipe } from '../app/js/core/recipeImport.js';
 
 const KURASU = findPreset('kurasu-japanese-iced');
 
@@ -289,7 +291,7 @@ test('이 기기 → 계정 옮기기: 로그는 두 번 옮겨도 한 벌, 계�
   cloud.appendLog({ t: 1, ev: 'app.start' });
   // 전역 store 를 쓰지 않는다(로그 수신처가 붙어 다른 테스트에 번진다) — 계정에 있는지는 함수로 넘긴다
   const inCloud = async () => { const all = await cloud.loadAll(); return (c, id) => (all[c] ?? []).some((d) => d.id === id); };
-  assert.deepEqual(localOnlyCounts(localMem, 'nb', await inCloud()), { total: 1, brews: 1, beans: 0, grinders: 0, servers: 0 });
+  assert.deepEqual(localOnlyCounts(localMem, 'nb', await inCloud()), { total: 1, brews: 1, beans: 0, grinders: 0, servers: 0, recipes: 0 });
   const n1 = await copyAll(local, cloud);
   assert.equal(n1.logs, 1);
   assert.equal(n1.logsSkipped, 1);
@@ -492,5 +494,161 @@ test('뜨거운 물 직접 정하기: 단계 목표는 같은 % 로 나누고, �
 
 test('레시피 태그: 핫/아이스 · 드리퍼 · 붓는 횟수', () => {
   assert.deepEqual(recipeTags(KURASU), ['아이스', 'Hario V60', '3번 붓기']);
+});
+
+// ── 레시피 가져오기(9/24) ──────────────────────────────────
+const sameRecipeNumbers = (a, b) => {
+  assert.equal(a.refDoseG, b.refDoseG);
+  assert.ok(Math.abs(a.waterRatio - b.waterRatio) < 1e-9);
+  assert.ok(Math.abs((a.iceRatio ?? 0) - (b.iceRatio ?? 0)) < 1e-9);
+  assert.equal(a.tempC, b.tempC);
+  assert.equal(a.endSec, b.endSec);
+  assert.equal(a.pourSec ?? null, b.pourSec ?? null);
+  assert.deepEqual(a.steps.map((s) => [s.kind, s.label, s.startSec, Math.round(s.cumPct * 1e6)]), b.steps.map((s) => [s.kind, s.label, s.startSec, Math.round(s.cumPct * 1e6)]));
+};
+
+test('레시피 가져오기: 프롬프트 속 쿠라스 예시를 꺼내 검사하면 오류 0, 변환하면 프리셋과 숫자가 같다', () => {
+  const prompt = recipePrompt(toImportFormat(KURASU));
+  const example = prompt.slice(prompt.indexOf('## 예시'));
+  const { raw, fixes } = readRecipeText(example);
+  assert.deepEqual(fixes, []);
+  const { recipe, errors } = validateRecipeImport(raw);
+  assert.deepEqual(errors, []);
+  sameRecipeNumbers(recipe, KURASU);
+  // 원문에 없는 뜸 설명(일반 설명)은 예시에서 비우고, 원문에 있는 2차 푸어 설명만 남긴다
+  assert.equal(raw.steps[0].hint, null);
+  assert.match(raw.steps[2].hint, /농도/);
+  assert.equal(recipe.kind, 'user');
+});
+
+test('레시피 가져오기: AI 답의 앞뒤 글·코드 블록·특수문자(둥근 따옴표, 마지막 쉼표, 주석)를 고쳐 읽는다', () => {
+  const ok = readRecipeText('네, 바꿨습니다!\n```json\n{ "a": 1 }\n```\n확인해 보세요.');
+  assert.deepEqual(ok, { raw: { a: 1 }, fixes: [] });
+  const messy = readRecipeText('{\n  “name”: “테스트”,\n  // 메모\n  "steps": [1, 2,],\n}');
+  assert.deepEqual(messy.raw, { name: '테스트', steps: [1, 2] });
+  assert.equal(messy.fixes.length, 3);
+  assert.throws(() => readRecipeText('레시피를 못 찾았어요'), /JSON 을 찾지 못했습니다/);
+  assert.throws(() => readRecipeText('{ "a": 1 "b": 2 }'), /JSON 문법 오류/);
+});
+
+test('레시피 가져오기: 단위 붙은 숫자·"1:10" 시간은 고쳐 읽고 경고, 틀린 단계는 어디가 왜 틀렸는지 알린다', () => {
+  const base = toImportFormat(KURASU);
+  const coerced = validateRecipeImport({ ...base, doseG: '16g', tempC: '91℃', endSec: '2:10', steps: base.steps.map((s, i) => (i === 1 ? { ...s, startSec: '0:40' } : s)) });
+  assert.deepEqual(coerced.errors, []);
+  assert.equal(coerced.recipe.refDoseG, 16);
+  assert.equal(coerced.recipe.tempC, 91);
+  assert.equal(coerced.recipe.endSec, 130);
+  assert.equal(coerced.recipe.steps[1].startSec, 40);
+  assert.equal(coerced.warnings.filter((w) => /읽었습니다/.test(w)).length, 4);
+  // 폼이 다시 채울 값: 고쳐 읽은 숫자, 못 고친 값은 원래 글 그대로
+  assert.equal(coerced.clean.doseG, 16);
+  assert.equal(coerced.clean.steps[1].startSec, 40);
+  const unfixable = validateRecipeImport({ ...base, doseG: '열여섯' });
+  assert.equal(unfixable.clean.doseG, '열여섯');
+  assert.ok(unfixable.errors.some((e) => /숫자가 아닙니다/.test(e)));
+  // 매번 붓는 양(40·60·50)으로 적은 경우 → «누적»으로 적으라고 알린다
+  const perPour = validateRecipeImport({ ...base, steps: [{ ...base.steps[0], untilG: 40 }, { ...base.steps[1], untilG: 60 }, { ...base.steps[2], untilG: 50 }] });
+  assert.equal(perPour.recipe, null);
+  assert.ok(perPour.errors.some((e) => /누적/.test(e)));
+  assert.ok(perPour.errors.some((e) => /hotWaterG\(150\)/.test(e)));
+  // 첫 단계가 0초가 아님, 시각이 거꾸로
+  const badTimes = validateRecipeImport({ ...base, steps: [{ ...base.steps[0], startSec: 5 }, { ...base.steps[1], startSec: 70 }, { ...base.steps[2], startSec: 60 }] });
+  assert.ok(badTimes.errors.some((e) => /첫 단계는 0초/.test(e)));
+  assert.ok(badTimes.errors.some((e) => /앞 단계\(70\)보다 커야/.test(e)));
+  assert.ok(validateRecipeImport({ ...base, format: 'other' }).errors.some((e) => /format/.test(e)));
+});
+
+test('레시피 수정: 저장한 레시피를 폼 형식으로 되돌렸다가 다시 검사하면 같은 레시피(출처·AI 메모 유지), 빈 틀은 이름만 넣으면 통과', () => {
+  const imported = validateRecipeImport({ ...toImportFormat(KURASU), source: { title: 'T', url: 'https://example.com/r', author: 'A' }, uncertain: ['온도는 원문에 범위로 나옴'] }).recipe;
+  const again = validateRecipeImport(toImportFormat(imported)).recipe;
+  sameRecipeNumbers(again, imported);
+  assert.equal(again.source.author, 'A');
+  assert.deepEqual(again.uncertain, ['온도는 원문에 범위로 나옴']);
+  assert.equal(again.steps[2].hint, imported.steps[2].hint);
+  assert.ok(validateRecipeImport(blankRecipe()).errors.some((e) => /name/.test(e)));
+  assert.deepEqual(validateRecipeImport({ ...blankRecipe(), name: '내 핫 레시피' }).errors, []);
+});
+
+// ── 9/25 사용자 요청 ──────────────────────────────────────────
+test('가수와 비율: 얼음이 추천보다 적으면 모자란 만큼 가수 추천, 가수 전·후 무게가 있으면 가수는 둘의 차이', () => {
+  const b = makeBrew({ id: 'x', at: 1_000, presses: [40, 70, 130] });
+  // 쿠라스 16g: 뜨거운 물 150g + 추천 얼음 70g → 계획 물 220g, 가수 더 넣을 것 없음
+  let dv = dilutionView(b);
+  assert.equal(b.conditions.iceTargetG, 70);
+  assert.equal(dv.targetWaterG, 220);
+  assert.equal(dv.moreG, 0);
+  // 얼음을 62g만 넣었다 → 8g 모자람 = 가수 8g 추천
+  b.conditions.iceG = 62;
+  dv = dilutionView(b);
+  assert.equal(dv.needG, 8);
+  assert.equal(dv.moreG, 8);
+  // 가수 전 610g · 후 616g(둘 다 서버 포함) → 가수 6g, 2g 더
+  b.result.serverWeightG = 610;
+  b.result.serverAfterG = 616;
+  assert.equal(measuredDilution(b.result), 6);
+  assert.equal(measuredDilution({ serverWeightG: 610, serverAfterG: null }), null);
+  dv = dilutionView(b);
+  assert.equal(dv.measured, true);
+  assert.equal(dv.dilutionG, 6);
+  assert.equal(dv.moreG, 2);
+  assert.equal(dv.waterNowG, 150 + 62 + 6);
+  // 비교표·조건 목록에도 가수 포함 비율과 가수 후 총무게가 나온다
+  assert.equal(conditionRows(b).find(([k]) => k === '가수')[1], '6g (가수 전·후 무게로 계산)');
+  assert.equal(sideBySide(b, makeBrew({ id: 'y', at: 9_000, presses: [40, 70, 130] })).find((r) => r.label === '가수 후 총무게').a, '616g');
+  // 9/25 전 기록(iceTargetG 없음)은 넣은 얼음을 추천으로 본다
+  const old = makeBrew({ id: 'o', at: 1_000, presses: [40, 70, 130] });
+  delete old.conditions.iceTargetG;
+  old.conditions.iceG = 60;
+  assert.equal(dilutionView(old).needG, 0);
+  // 핫으로 내렸으면 얼음은 셈에 넣지 않는다
+  const hot = makeBrew({ id: 'h', at: 1_000, presses: [40, 70, 130] });
+  Object.assign(hot.conditions, { style: 'hot', iceG: 0, iceTargetG: 0 });
+  assert.equal(dilutionView(hot).targetWaterG, 150);
+});
+
+test('원두: 이름 자동 조합, 구매 무게 단위, 기록으로 남은 원두 추정·10g 이하 알림, 소비기한에서 제조일 역산', () => {
+  const bean = createBean({ id: 'b1', country: '에티오피아', region: '예가체프', producer: ' 첼바 ', variety: '', process: '워시드' });
+  assert.equal(beanAutoName(bean), '에티오피아 예가체프 첼바 워시드');
+  assert.equal(beanNameIsAuto(bean), true);
+  assert.equal(beanNameIsAuto({ name: '9/25 전에 등록한 원두' }), false);
+  assert.equal(purchasedGrams({ purchased: { amount: 12, unit: 'oz' } }), 340.2);
+  assert.equal(purchasedGrams({ purchased: { amount: 0.2, unit: 'kg' } }), 200);
+  assert.equal(purchasedGrams({ purchased: null }), null);
+  bean.purchased = { amount: 50, unit: 'g' };
+  const brews = [makeBrew({ id: 'a', at: 1_000, presses: [40, 70, 130] }), makeBrew({ id: 'b', at: 2_000, presses: [40, 70, 130] })];
+  brews.push(makeBrew({ id: 'c', at: 3_000, presses: [40, 70, 130], bean: { id: 'other', name: '다른 원두' } }));
+  let st = beanStock(bean, brews);
+  assert.deepEqual([st.usedG, st.brews, st.remainingG, st.low], [32, 2, 18, false]);
+  brews.push(makeBrew({ id: 'd', at: 4_000, presses: [40, 70, 130] }));
+  st = beanStock(bean, brews);
+  assert.deepEqual([st.remainingG, st.low], [2, true]);
+  assert.equal(beanStock({ ...bean, status: 'consumed' }, brews).low, false); // 소모로 바꾸면 알림이 멈춘다
+  assert.equal(beanStock({ ...bean, purchased: null }, brews).low, false); // 구매 무게가 없으면 세지 않는다
+  assert.equal(roastedFromBestBefore('2027-09-25'), '2026-09-25');
+  assert.equal(roastedFromBestBefore('2027-03-31', 1), '2027-02-28');
+  assert.equal(roastedFromBestBefore('', 12), null);
+  assert.equal(daysSince('2026-09-20', new Date(2026, 8, 25, 13).getTime()), 5);
+  // 9/24 전 3단계 값이 5단계 목록에 그대로 있다
+  for (const r of ['약배전', '중배전', '강배전']) assert.ok(ROASTS.includes(r));
+});
+
+test('타이머 대기: [시작] 전에는 0초에 멈춰 있고 방치 확인도 묻지 않는다', () => {
+  const plan = buildPlan(KURASU, 16);
+  const r = readyBrew();
+  assert.equal(elapsedSec(r, 5_000_000), 0);
+  assert.equal(view(r, plan, 5_000_000).remainingSec, 40);
+  assert.equal(presence(r, plan, 9_000_000_000).phase, 'ok');
+});
+
+test('공유창 파일 이름: 크롬이 막는 .md·.json 은 .txt 로 보낸다', () => {
+  assert.equal(shareSheetName('nextbrew-20260925-0712.md'), 'nextbrew-20260925-0712-md.txt');
+  assert.equal(shareSheetName('nextbrew-20260925-0712.json'), 'nextbrew-20260925-0712-json.txt');
+});
+
+test('AI 공유 기본 프롬프트: 파일의 역할 이름을 그대로 쓰고, 기본 질문은 다음 추출 조정 제안', () => {
+  const p = defaultSharePrompt();
+  for (const role of Object.values(SHARE_ROLES)) assert.ok(p.includes(`「${role}」`), `역할 이름이 프롬프트와 다름: ${role}`);
+  assert.match(p, /다음 추출에서 무엇을 바꾸면 좋을지/);
+  assert.match(p, /지어내지 말고/);
 });
 

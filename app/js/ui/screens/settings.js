@@ -1,6 +1,6 @@
 // 설정: 저장 위치·로그인 / 그라인더(영점·클릭당 µm) / 서버 / AI 공유 / 화면(보조 설명) / 백업(JSON 내보내기·가져오기) / 정보
 
-import { h, section, field, stepper, toast, modal, chips, toggle, term, googleButton } from '../dom.js';
+import { h, section, field, stepper, toast, modal, chips, toggle, term, googleButton, linkButton } from '../dom.js';
 import { store, createLocalAdapter, copyAll, COLLECTIONS } from '../../core/store.js';
 import { createGrinder, createServer, SHARE_FORMATS, SHARE_SCOPES } from '../../core/schema.js';
 import { SHARE_FORMAT_WORDS, SHARE_SCOPE_WORDS, WORDS } from '../../core/words.js';
@@ -82,14 +82,14 @@ function stamp() {
 async function doExport() {
   const include = store.settings().includeLogsInExport;
   const logs = include ? await store.logs() : null;
-  const data = buildExport({ brews: store.brews(), beans: store.list('beans'), grinders: store.list('grinders'), servers: store.list('servers'), logs });
+  const data = buildExport({ brews: store.brews(), beans: store.list('beans'), grinders: store.list('grinders'), servers: store.list('servers'), recipes: store.list('recipes'), logs });
   const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
   const a = h('a', { href: url, download: `nextbrew-${stamp()}.json` });
   document.body.append(a);
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
-  logEvent('export', { brews: data.brews.length, beans: data.beans.length, grinders: data.grinders.length, servers: data.servers.length, logs: logs?.length ?? 0 });
+  logEvent('export', { brews: data.brews.length, beans: data.beans.length, grinders: data.grinders.length, servers: data.servers.length, recipes: data.recipes.length, logs: logs?.length ?? 0 });
 }
 
 async function doImport(file) {
@@ -185,6 +185,11 @@ export function settingsScreen() {
         '내 분쇄를 사진으로 재 볼 때(A4 측정지 인쇄): ',
         h('a', { href: 'https://community.unspecialty.com/compass/grinder', target: '_blank', rel: 'noopener' }, '언스페셜티 분쇄도 가이드'),
       ),
+    ),
+    section(
+      '레시피',
+      h('div', { class: 'hint' }, 'AI 로 레시피를 추가하거나 직접 입력하고, 추가한 레시피를 고치거나 지웁니다.'),
+      linkButton({ href: '#/recipes', label: '레시피 추가·관리' }),
     ),
     section(
       '서버',

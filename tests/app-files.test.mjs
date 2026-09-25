@@ -38,3 +38,51 @@ test('매니페스트의 아이콘이 존재한다', () => {
   const m = JSON.parse(readFileSync(join(APP, 'manifest.webmanifest'), 'utf8'));
   for (const i of m.icons) assert.ok(existsSync(join(APP, i.src)), `없는 아이콘: ${i.src}`);
 });
+
+// DOM 의 replaceChildren 은 null 을 건너뛰지 않고 「null」 글자로 넣는다 — 9/24 에 원두 노트·타이머·준비 화면에서 세 번 화면에 찍혔다.
+// 그래서 화면 채우기는 ui/dom.js 의 fill() 하나로 모으고, 다른 곳에서 직접 쓰면 여기서 실패한다.
+test('화면 채우기는 fill() 만 쓴다(replaceChildren 직접 호출 금지)', () => {
+  const bad = [];
+  for (const p of walk(join(APP, 'js')).filter((f) => f.endsWith('.js'))) {
+    readFileSync(p, 'utf8').split('\n').forEach((line, i) => {
+      const code = line.trim();
+      if (code.startsWith('//') || !code.includes('replaceChildren(')) return;
+      if (p.endsWith(join('ui', 'dom.js')) && code.startsWith('el.replaceChildren(')) return; // fill() 안의 한 곳
+      bad.push(`${relative(APP, p)}:${i + 1}`);
+    });
+  }
+  assert.deepEqual(bad, [], `replaceChildren 을 직접 쓴 곳: ${bad.join(', ')} — fill() 을 쓰세요`);
+});
+
+// 글자 크기는 역할별 변수(--fs-*)로만 정한다(사용자 요청 9/25 — 같은 역할인데 크기가 제각각이던 것).
+// 아래 목록만 예외이고, 예외에는 이유를 적는다. 그 밖에 크기를 직접 적으면 실패한다.
+const FONT_SIZE_EXEMPT = {
+  ':root': '역할별 크기를 정의하는 곳',
+  'html, body': '본문 크기 = --fs-body 를 쓰는지 아래에서 따로 확인',
+  '.stepper button': '−/+ 기호 글자 — 글이 아니라 누르는 기호라 크게',
+  '.link-action .link-arrow': '화살표 기호 — 옆 글자에 맞춘 em',
+  '.elapsed': '타이머: 폰을 세워 두고 멀리서 보는 경과 시간',
+  '.ring-num': '타이머: 남은 초(가장 큰 숫자)',
+  '.ring-step': '타이머: 원 안 단계 이름',
+  '.pour-target': '타이머: 붓기 목표 g',
+  '.pour-sub': '타이머: 붓기 목표 아래 속도·남은 초',
+  '.ring-pour': '타이머: 원 안 «지금 저울 값»(9/25)',
+  '.google-btn': 'Google 브랜딩 가이드가 정한 14px',
+  '.c-tick': '그래프(SVG) 눈금 — SVG 좌표 단위',
+};
+test('글자 크기는 역할별 변수만 쓴다(예외는 목록에 이유와 함께)', () => {
+  const css = readFileSync(join(APP, 'css/app.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  const bad = [];
+  for (const m of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    const selector = m[1].trim();
+    for (const d of m[2].matchAll(/font-size:\s*([^;]+)/g)) {
+      const v = d[1].trim();
+      if (/^var\(--fs-[a-z]+\)$/.test(v)) continue;
+      if (selector in FONT_SIZE_EXEMPT) continue;
+      bad.push(`${selector} { font-size: ${v} }`);
+    }
+  }
+  assert.deepEqual(bad, [], `역할 변수를 쓰지 않은 글자 크기:\n${bad.join('\n')}`);
+  assert.match(css, /html, body \{[^}]*font-size: var\(--fs-body\)/);
+});
+

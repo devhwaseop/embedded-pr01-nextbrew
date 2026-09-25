@@ -13,7 +13,14 @@ export function startBrew(nowMs) {
   return { startedAt: nowMs, stepIndex: 0, stepStartsSec: [0], endedSec: null, status: 'running' };
 }
 
+// 준비 상태(사용자 요청 9/25): 준비 화면에서 [다음]을 누르면 타이머 화면이 먼저 뜨고, [시작]을 누른 순간부터 센다.
+// 준비 화면의 [추출 시작]이 곧바로 시간을 재기 시작해, 물을 붓기 전의 몇 초가 기록에 섞이던 것을 막는다.
+export function readyBrew() {
+  return { startedAt: null, stepIndex: 0, stepStartsSec: [0], endedSec: null, status: 'ready' };
+}
+
 export function elapsedSec(state, nowMs) {
+  if (state.startedAt == null) return 0; // 준비 상태
   const end = state.endedSec != null ? state.startedAt + state.endedSec * 1000 : nowMs;
   return Math.max(0, (end - state.startedAt) / 1000);
 }

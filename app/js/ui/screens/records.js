@@ -1,12 +1,13 @@
 // 홈 · 기록 목록 · 기록 상세 (AI 공유는 share.js)
 
-import { h, section, fmtDateTime, term, toast } from '../dom.js';
+import { h, section, fmtDateTime, term, toast, googleButton } from '../dom.js';
 import { WORDS } from '../../core/words.js';
 import { store, loadActive, localOnlyCounts, copyAll, createLocalAdapter } from '../../core/store.js';
 import { logEvent } from '../../core/log.js';
-import { formatSec, formatDelta, SURVEY_ITEMS, INTENSITY_WORDS, LIKING_WORDS } from '../../core/schema.js';
+import { formatSec, formatDelta, beanStock, SURVEY_ITEMS, INTENSITY_WORDS, LIKING_WORDS } from '../../core/schema.js';
+import { lowBeanNotice } from './beans.js';
 import { sideBySide } from '../../core/diff.js';
-import { firebaseEnabled } from '../../platform/firebase.js';
+import { firebaseEnabled, signIn } from '../../platform/firebase.js';
 import { timerTable, conditionsList, comparisonBlock, ratioChange } from './brew.js';
 import { brewFigure, compareFigure, compassFigure } from '../charts.js';
 import { readCompass, adviseNext, umPerClickFor } from '../../core/compass.js';
@@ -20,7 +21,7 @@ function brewRow(b) {
   );
 }
 
-const LOCAL_WORDS = { brews: '추출', beans: '원두', grinders: '그라인더', servers: '서버' };
+const LOCAL_WORDS = { brews: '추출', beans: '원두', grinders: '그라인더', servers: '서버', recipes: '레시피' };
 
 async function moveLocalToAccount(btn) {
   btn.disabled = true;
@@ -30,7 +31,8 @@ async function moveLocalToAccount(btn) {
   setTimeout(() => location.reload(), 600);
 }
 
-// loginLink = 배너 안에 설정(로그인)으로 가는 링크를 둘지 — 설정 화면에서는 로그인 버튼이 따로 있어 뺀다
+// loginLink = 배너 아래에 구글 로그인 버튼을 둘지 — 설정 화면에서는 로그인 버튼이 따로 있어 뺀다.
+// 9/25 사용자 요청: 「로그인」 글자 링크로 설정 화면에 보내지 말고, 그 자리에서 바로 구글 로그인을 띄운다.
 export function storageBanner({ loginLink = true } = {}) {
   // 새로 고침 직후 계정 확인 중이면 「로그인하지 않아…」로 잘못 보이지 않게
   if (store.mode !== 'cloud' && store.pendingAccount) return h('div', { class: 'banner pending' }, `계정 확인 중… · ${store.pendingAccount}`);
@@ -45,7 +47,14 @@ export function storageBanner({ loginLink = true } = {}) {
       lo.total ? h('div', { class: 'banner local-only' }, h('div', null, `이 기기에만 있는 기록 ${lo.total}건`, h('span', { class: 'term-sub' }, detail)), move) : null,
     );
   }
-  if (firebaseEnabled()) return h('div', { class: 'banner' }, '로그인하지 않아 이 기기에만 저장 중입니다.', loginLink ? [' ', h('a', { href: '#/settings' }, '로그인')] : null);
+  if (firebaseEnabled()) {
+    return h(
+      'div',
+      { class: 'banner login' },
+      h('div', null, '로그인하지 않아 이 기기에만 저장 중입니다.'),
+      loginLink ? googleButton({ onClick: () => signIn().catch((e) => toast(`로그인 실패: ${e.code ?? e.message}`)) }) : null,
+    );
+  }
   return h('div', { class: 'banner' }, '이 기기에만 저장 중입니다(Firebase 설정 전).');
 }
 
@@ -59,6 +68,9 @@ export function homeScreen() {
     h('h1', null, 'NextBrew'),
     storageBanner(),
     active?.state?.status === 'running' ? h('a', { class: 'button primary big wide', href: '#/timer' }, '진행 중인 추출로 돌아가기') : null,
+    active?.state?.status === 'ready' ? h('a', { class: 'button primary big wide', href: '#/timer' }, '준비한 추출로 돌아가기') : null,
+    // 남은 원두가 10g 이하인 원두(사용자 요청 9/25) — 다 썼으면 그 자리에서 「소모」로 바꾼다
+    ...store.list('beans').filter((x) => beanStock(x, brews).low).map((x) => lowBeanNotice(x, brews, 'home')),
     h('a', { class: 'button primary big wide', href: '#/prep' }, '추출하기'),
     waiting.length ? section('설문을 기다리는 기록', ...waiting.map(brewRow)) : null,
     section('최근 기록', ...(brews.length ? brews.slice(0, 3).map(brewRow) : [h('div', { class: 'hint' }, '아직 기록이 없습니다.')])),

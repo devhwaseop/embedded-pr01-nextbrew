@@ -28,6 +28,8 @@ const SHELL = [
   './js/core/words.js',
   './js/core/compass.js',
   './js/core/chart.js',
+  './js/core/recipeImport.js',
+  './js/core/recipeBook.js',
   './js/data/presets.js',
   './js/platform/firebase.js',
   './js/platform/wakelock.js',
@@ -40,6 +42,7 @@ const SHELL = [
   './js/ui/screens/beans.js',
   './js/ui/screens/settings.js',
   './js/ui/screens/share.js',
+  './js/ui/screens/recipes.js',
 ];
 
 self.addEventListener('install', (e) => {

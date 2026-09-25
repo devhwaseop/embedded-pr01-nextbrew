@@ -4,7 +4,7 @@ import { SCHEMA_VERSION } from './schema.js';
 
 export const APP_NAME = 'NextBrew';
 
-export function buildExport({ brews, beans, grinders, servers = [], logs = null, now = Date.now() }) {
+export function buildExport({ brews, beans, grinders, servers = [], recipes = [], logs = null, now = Date.now() }) {
   const out = {
     app: APP_NAME,
     schemaVersion: SCHEMA_VERSION,
@@ -13,6 +13,7 @@ export function buildExport({ brews, beans, grinders, servers = [], logs = null,
     beans,
     grinders,
     servers,
+    recipes,
   };
   if (logs) out.logs = logs;
   return out;
@@ -33,6 +34,7 @@ export function parseImport(text) {
     beans: Array.isArray(data.beans) ? data.beans : [],
     grinders: Array.isArray(data.grinders) ? data.grinders : [],
     servers: Array.isArray(data.servers) ? data.servers : [], // 9/24 추가 — 옛 파일에는 없다
+    recipes: Array.isArray(data.recipes) ? data.recipes : [], // 9/24 추가(가져온 레시피)
     logs: Array.isArray(data.logs) ? data.logs : [],
   };
 }

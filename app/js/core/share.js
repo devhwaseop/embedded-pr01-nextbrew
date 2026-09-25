@@ -73,6 +73,27 @@ export function buildSharePackage({ brews, beans = [], current, now = Date.now()
   };
 }
 
+// AI 에게 보낼 기본 프롬프트(사용자 결정 9/25 — 기본 질문 = 다음 추출 조정 제안).
+// 공유 화면에서 보고·고치고·복사한다. 고친 글은 설정 sharePrompt 에 남는다(비우거나 기본으로 되돌리면 이 글).
+// 공유 파일에는 AI 에게 하는 말이 없고 기록만 있어서 이 글이 질문 역할을 한다. 역할 이름은 파일 표기(SHARE_ROLES)를 그대로 쓴다.
+export function defaultSharePrompt() {
+  return [
+    '첨부한 파일은 핸드드립 추출 기록 앱 NextBrew 에서 내보낸 기록입니다(.txt 안에 Markdown 또는 JSON).',
+    `「${SHARE_ROLES.current}」이 방금 내린 커피이고, 「${SHARE_ROLES.previous}」과 「${SHARE_ROLES.sameRecipeAndBean}」은 비교용입니다. 파일에 없으면 없는 대로 봐 주세요.`,
+    '',
+    '이 기록을 보고 다음 추출에서 무엇을 바꾸면 좋을지 제안해 주세요.',
+    '- 한 번에 한두 가지만 바꿉니다. 분쇄(굵게·가늘게 — 그라인더 클릭이나 µm), 원두량(물은 그대로), 물 온도 중에서 고르고, 얼마나 바꿀지 숫자로 적어 주세요.',
+    '- 제안마다 기록의 어떤 값(맛 설문·타이머·조건)을 근거로 했는지 적어 주세요.',
+    '- 기록에 없는 값은 지어내지 말고, 판단에 꼭 필요한 정보가 빠졌으면 먼저 물어봐 주세요.',
+  ].join('\n');
+}
+
+// 공유창(navigator.share)용 이름: nextbrew-20260925-0712.md → nextbrew-20260925-0712-md.txt
+// 크롬은 허용 목록에 없는 .md·.json 파일 공유를 막는다(9/25 — screens/share.js 머리말). 내용 형식은 이름에 남긴다.
+export function shareSheetName(name) {
+  return name.replace(/\.(md|json)$/, '-$1.txt');
+}
+
 export function shareFileName(pkg, format) {
   const cur = pkg.brews.find((b) => b.roles.includes('current'));
   const stamp = formatDateTime(cur.timer.startedAt).replace(/[-:]/g, '').replace(' ', '-');
@@ -147,8 +168,10 @@ export function toMarkdown(pkg) {
       ['지역', bean.region],
       ['생산자', bean.producer],
       ['품종', bean.variety],
-      ['가공', bean.process],
+      ['가공방식', bean.process],
       ['배전도', bean.roast],
+      ['제조일(로스팅일)', bean.roastedOn ? `${bean.roastedOn}${bean.roastedOnFrom ? ` (소비기한 ${bean.roastedOnFrom.bestBefore} − ${bean.roastedOnFrom.months}개월 추정)` : ''}` : ''],
+      ['개봉일', bean.openedOn],
       ['노트', (bean.notes ?? []).join(', ')],
       ['메모', bean.memo],
     ].filter(([, v]) => v);

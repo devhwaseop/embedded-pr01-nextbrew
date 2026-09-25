@@ -4,7 +4,7 @@
 // - 시간은 ±2초 이내면 사람 손의 편차로 보고 «다름»으로 치지 않는다.
 // - 직접 적은 글(메모)은 비교하지 않고 각 기록 화면에서 모두 보여 준다(보고서 결정).
 
-import { grindActual, formatGrind, formatSec, formatDelta, netServerWeight, TIME_TOLERANCE_SEC, SURVEY_ITEMS, INTENSITY_WORDS, LIKING_WORDS } from './schema.js';
+import { grindActual, formatGrind, formatSec, formatDelta, netServerWeight, dilutionView, TIME_TOLERANCE_SEC, SURVEY_ITEMS, INTENSITY_WORDS, LIKING_WORDS } from './schema.js';
 import { WORDS, endStateLabel } from './words.js';
 
 export const IGNORE_SEC = TIME_TOLERANCE_SEC;
@@ -52,7 +52,8 @@ export function compareTimer(cur, prev) {
 const show = (v, unit = '') => (v == null || v === '' ? '—' : `${v}${unit}`);
 const water = (b) => b.result?.actualWaterG ?? b.conditions.hotWaterG;
 const pour = (b) => b.result?.actualPourMethod ?? b.conditions.pourMethod;
-const ratio = (b) => `1:${Math.round((water(b) / b.conditions.doseG) * 10) / 10}`;
+const ratioOf = (x) => `1:${Math.round(x * 10) / 10}`;
+const ratio = (b) => ratioOf(water(b) / b.conditions.doseG);
 const grind = (b) => {
   const g = b.conditions.grind;
   if (!g || g.dial == null) return '—';
@@ -82,8 +83,11 @@ export function sideBySide(cur, prev) {
   rows.push(wrow(C, WORDS.rinse, rinse(cur), rinse(prev)));
   rows.push(row(C, '드립 방법', show(pour(cur)), show(pour(prev))));
   rows.push(wrow(C, WORDS.dilution, show(cur.result?.dilutionG ?? 0, 'g'), show(prev.result?.dilutionG ?? 0, 'g')));
+  // 얼음·가수까지 넣은 물 전체와 원두의 비율(9/25) — 마시는 커피의 농도를 가늠하는 값
+  rows.push(row(C, `${WORDS.ratio.label}(가수 포함)`, ratioOf(dilutionView(cur).ratioNow), ratioOf(dilutionView(prev).ratioNow)));
   rows.push(row(C, '종료 상태', show(endStateLabel(cur.result?.endState)), show(endStateLabel(prev.result?.endState))));
   rows.push(row(C, WORDS.serverTotal.label, show(cur.result?.serverWeightG, 'g'), show(prev.result?.serverWeightG, 'g')));
+  rows.push(row(C, WORDS.serverAfter.label, show(cur.result?.serverAfterG, 'g'), show(prev.result?.serverAfterG, 'g')));
   rows.push(wrow(C, WORDS.netWeight, show(netServerWeight(cur.result), 'g'), show(netServerWeight(prev.result), 'g')));
 
   // 타이머: 단계 순서대로 나란히(레시피가 다르면 이름도 함께 보인다)

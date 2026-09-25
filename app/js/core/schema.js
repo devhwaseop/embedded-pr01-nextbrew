@@ -98,8 +98,12 @@ export const DRIPPERS = ['Hario V60 02', 'Hario V60 MUGEN 02'];
 export const FILTERS = ['표백 종이 필터', '무표백 종이 필터'];
 export const POUR_METHODS = ['나선형', '센터 푸어', '원 푸어'];
 export const PROCESS_TYPES = ['워시드', '내추럴']; // SCA 외재적 평가 양식의 유형. 그 밖은 직접 입력.
-// 배전도(선택, 사용자 결정 9/24 — 언스페셜티 브루잉 가이드의 배전도 구분 참고). 다음 추출 제안에서 강배전의 쓴맛을 한 단계 낮춰 본다.
-export const ROASTS = ['약배전', '중배전', '강배전'];
+// 배전도(선택). 9/25 사용자 요청으로 3단계 → 5단계 슬라이더. 국내 로스터리가 봉투에 흔히 쓰는 말이다.
+// 「다크 로스트」는 강배전의 영어 표현이라 따로 두지 않는다(docs/agent-notes/참고 출처 목록.md 「배전도」).
+// 9/24 전 기록의 약배전·중배전·강배전은 이 목록에 그대로 있어 옛 값이 깨지지 않는다.
+// 다음 추출 제안은 강배전일 때만 쓴맛을 한 단계 낮춰 본다(core/compass.js).
+export const ROASTS = ['약배전', '중약배전', '중배전', '중강배전', '강배전'];
+export const ROAST_TICKS = ['약', '중약', '중', '중강', '강'];
 // 종료 상태는 key 로 저장한다. 화면 단어는 core/words.js END_STATE_WORDS.
 export const END_STATES = ['drained', 'cutoff'];
 // AI 공유 파일 형식. 기본값은 설정에서 고른다(처음 값 = md: AI에게 묻는 용도가 기본이라서).
@@ -125,7 +129,8 @@ export function createBrew({ id = null, recipe, plan, prep, timer, now = Date.no
       style: prep.style, // 'iced' | 'hot'
       doseG: plan.doseG,
       hotWaterG: plan.hotWaterG,
-      iceG: plan.iceG,
+      iceG: plan.iceG, // 실제로 넣은 얼음(준비 화면에서 잰 값)
+      iceTargetG: plan.iceTargetG ?? plan.iceG, // 레시피가 권한 얼음(원두량 × 레시피 비율) — 모자란 만큼 가수로 채운다(9/25)
       tempC: prep.tempC,
       grind: prep.grind, // { grinderId, grinderName, dial, zeroOffset, um }
       dripper: prep.dripper,
@@ -138,8 +143,10 @@ export function createBrew({ id = null, recipe, plan, prep, timer, now = Date.no
       endState: null,
       actualWaterG: null, // null = 계획대로
       actualPourMethod: null, // null = 계획대로
-      dilutionG: plan.dilutionG ?? 0, // 가수(추출 후 추가한 물)
-      serverWeightG: null, // 선택: 서버 총 무게(서버 자체 무게 + 커피 + 얼음). null = 재지 않음
+      dilutionG: plan.dilutionG ?? 0, // 가수(추출 후 추가한 물). 처음 값 = 계획(레시피 가수 + 얼음이 모자란 만큼)
+      serverWeightG: null, // 선택: 가수 전 총무게(서버 자체 무게 + 커피 + 얼음). null = 재지 않음
+      serverAfterG: null, // 선택: 가수 후 총무게(서버 포함). 가수 전과 함께 있으면 가수 = 둘의 차이(9/25)
+      serverOff: false, // 「서버 무게 재기」를 끈 기록. 처음 값은 켜짐(9/25 사용자 요청)
       server: null, // 선택: 잰 서버 { id(등록한 서버면), name, tareG(서버 자체 무게) } — 등록값을 복사해 둔다
     },
     survey: null,
@@ -152,18 +159,83 @@ export function createBean(fields = {}, now = Date.now()) {
     schemaVersion: SCHEMA_VERSION,
     id: fields.id ?? newId('bean', now),
     name: '',
+    nameAuto: true, // 이름 = 국가·지역·생산자·품종·가공방식을 이어 붙인 것(9/25 사용자 요청, 처음 값). false = 직접 적은 이름
     roaster: '',
     country: '',
     region: '',
     producer: '', // 농장·생산자
     variety: '', // 품종
-    process: '', // 가공 방식
+    process: '', // 가공방식
     roast: '', // 배전도(ROASTS 중 하나, 선택)
     notes: [], // 로스터리가 표기한 노트
     memo: '',
+    purchased: null, // 구매 무게 { amount, unit(BEAN_UNITS 키) } — 남은 원두 추정의 출발점
+    roastedOn: null, // 제조일(로스팅일) 'YYYY-MM-DD'
+    roastedOnFrom: null, // 제조일을 소비기한에서 거꾸로 셌으면 { bestBefore, months } — 화면에 «추정»으로 보인다
+    openedOn: null, // 개봉일 'YYYY-MM-DD'
+    status: 'active', // 'active' | 'consumed'(다 씀 — 목록에서 흐리게, 준비 화면 목록에서 뺀다)
+    consumedAt: null,
     ...fields,
     updatedAt: new Date(now).toISOString(),
   };
+}
+
+// ── 원두 이름·남은 양·날짜(9/25 사용자 요청) ─────────────────────
+// 원두 품명은 흔히 «국가 지역 생산자 품종 가공방식» 순으로 붙인다(예: 에티오피아 예가체프 첼바 G1 워시드).
+export function beanAutoName(b) {
+  return [b.country, b.region, b.producer, b.variety, b.process].map((v) => (v ?? '').trim()).filter(Boolean).join(' ');
+}
+// 9/25 전에 등록한 원두는 nameAuto 가 없다 — 직접 적은 이름을 지키려고 «직접»으로 본다
+export function beanNameIsAuto(b) {
+  return b.nameAuto === true;
+}
+
+// 구매 무게 단위. oz·lb 는 국제 상용 단위의 정의값(1 oz = 28.349523125 g, 1 lb = 453.59237 g).
+export const BEAN_UNITS = { g: { label: 'g', grams: 1 }, kg: { label: 'kg', grams: 1000 }, oz: { label: 'oz', grams: 28.349523125 }, lb: { label: 'lb', grams: 453.59237 } };
+export function purchasedGrams(b) {
+  const p = b?.purchased;
+  if (!p || p.amount == null || !BEAN_UNITS[p.unit]) return null;
+  return round1(p.amount * BEAN_UNITS[p.unit].grams);
+}
+
+// 남은 원두 추정 = 구매 무게 − 이 원두로 남긴 기록들의 원두량 합. 기록 없이 쓴 원두·흘린 양은 모른다(추정).
+export const LOW_BEAN_G = 10; // 이 값 이하이면 «거의 다 씀» 알림(사용자 요청 9/25)
+export function beanStock(b, brews) {
+  const total = purchasedGrams(b);
+  const mine = (brews ?? []).filter((x) => x.bean?.id === b.id);
+  const usedG = round1(mine.reduce((a, x) => a + (Number(x.conditions?.doseG) || 0), 0));
+  const remainingG = total == null ? null : round1(total - usedG);
+  return { totalG: total, usedG, brews: mine.length, remainingG, low: remainingG != null && remainingG <= LOW_BEAN_G && b.status !== 'consumed' };
+}
+
+// 날짜: 'YYYY-MM-DD' 를 그 나라 시간의 자정으로 읽는다(UTC 로 읽으면 하루가 밀린다)
+export function parseDay(s) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s ?? '');
+  return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : null;
+}
+export function formatDay(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+export function daysSince(day, now = Date.now()) {
+  const d = parseDay(day);
+  if (!d) return null;
+  const today = new Date(now);
+  today.setHours(0, 0, 0, 0);
+  return Math.round((today - d) / 86400000);
+}
+// 소비기한에서 제조일을 거꾸로 센다. 기간은 로스터리마다 다르다(6개월~2년 — 참고 출처 목록 「원두 소비기한」). 처음 값 12개월.
+export const DEFAULT_SHELF_MONTHS = 12;
+export function shiftMonths(day, months) {
+  const d = parseDay(day);
+  if (!d) return null;
+  const r = new Date(d.getFullYear(), d.getMonth() + months, d.getDate());
+  // 달 끝 보정: 3/31 에서 1개월 전이 3/3 이 되지 않게(날짜가 넘치면 그 달 마지막 날)
+  if (r.getDate() !== d.getDate()) r.setDate(0);
+  return formatDay(r);
+}
+export function roastedFromBestBefore(bestBefore, months = DEFAULT_SHELF_MONTHS) {
+  if (!months) return null;
+  return shiftMonths(bestBefore, -months);
 }
 
 // 서버 뺀 무게 = 서버 총 무게 − 서버 자체 무게. 둘 중 하나라도 없으면 null.
@@ -172,6 +244,39 @@ export function netServerWeight(result) {
   const tare = result?.server?.tareG;
   if (total == null || tare == null) return null;
   return round1(total - tare);
+}
+
+// 가수 = 가수 후 총무게 − 가수 전 총무게(둘 다 서버 포함이라 서버 무게는 지워진다). 둘 중 하나라도 없으면 null.
+export function measuredDilution(result) {
+  if (result?.serverWeightG == null || result?.serverAfterG == null) return null;
+  return round1(result.serverAfterG - result.serverWeightG);
+}
+
+// 가수와 원두·물 비율(9/25 사용자 요청).
+// 물 합계 = 실제 부은 뜨거운 물 + 넣은 얼음 + 가수.  계획 합계 = 계획 뜨거운 물 + 레시피가 권한 얼음 + 레시피 가수.
+// 얼음은 추출이 아니라 식히고 묽히는 몫이라, 얼음이 모자라거나 물을 덜 부었으면 그만큼을 추출 뒤 가수로 채우면 계획 비율이 된다.
+// needG = 계획 비율이 되려면 가수가 모두 몇 g 이어야 하나(음수면 가수 없이도 이미 계획보다 연하다), moreG = 지금 가수에서 더 넣을 양.
+export function dilutionView(b) {
+  const c = b.conditions;
+  const r = b.result ?? {};
+  const iced = c.style !== 'hot';
+  const hot = r.actualWaterG ?? c.hotWaterG;
+  const ice = iced ? c.iceG ?? 0 : 0;
+  const iceTarget = iced ? c.iceTargetG ?? c.iceG ?? 0 : 0;
+  const measured = measuredDilution(r);
+  const dilutionG = measured ?? r.dilutionG ?? 0;
+  const targetWaterG = c.hotWaterG + iceTarget + (b.recipe?.snapshot?.dilutionG ?? 0);
+  const needG = round1(targetWaterG - hot - ice);
+  return {
+    dilutionG,
+    measured: measured != null,
+    waterNowG: round1(hot + ice + dilutionG),
+    ratioNow: (hot + ice + dilutionG) / c.doseG,
+    targetWaterG,
+    ratioTarget: targetWaterG / c.doseG,
+    needG,
+    moreG: round1(needG - dilutionG),
+  };
 }
 
 // 서버(추출 받는 그릇): 이름과 자체 무게(g). 결과 화면에서 총 무게에서 빼는 데 쓴다.
