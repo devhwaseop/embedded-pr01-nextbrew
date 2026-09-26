@@ -8,7 +8,7 @@
 // 값은 «다음 추출에 쓸 값»(바꾼 뒤의 값)으로 받는다 — 「몇 클릭 굵게」처럼 차이로 받으면 그라인더마다 다이얼 방향이 달라 틀리기 쉽다.
 
 import { readLooseJson, fieldReaders } from './looseJson.js';
-import { n2 } from './schema.js';
+import { n2, isActive } from './schema.js';
 
 export const ADVICE_FORMAT = 'nextbrew-advice';
 export const ADVICE_FORMAT_VERSION = 1;
@@ -180,7 +180,7 @@ export function advicePatch(advice, from, { grinderId = null } = {}) {
 
 // 준비 화면에 띄울 제안: 같은 레시피(원두를 골랐으면 같은 원두 · 블렌드 템플릿이면 같은 템플릿)의 가장 최근 «AI 제안이 있는» 기록
 export function lastAdvised(brews, { recipeId, beanId = null }) {
-  return brews.find((b) => b.aiAdvice && b.recipe.id === recipeId && (!beanId || (b.bean?.id ?? b.bean?.blendId) === beanId)) ?? null;
+  return brews.find((b) => b.aiAdvice && isActive(b) && b.recipe.id === recipeId && (!beanId || (b.bean?.id ?? b.bean?.blendId) === beanId)) ?? null;
 }
 
 // ── 따른 제안 남기기(9/26 사용자 결정) ─────────────────────────

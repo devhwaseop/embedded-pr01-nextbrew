@@ -8,11 +8,11 @@ import { PRESETS } from '../../data/presets.js';
 import { allRecipes, findRecipe } from '../../core/recipeBook.js';
 import { buildPlan, scaleAdvice, formatRatio, stepHint, HINT_SOURCES, recipeTags } from '../../core/recipe.js';
 import { startBrew, readyBrew, view, advance, undoAdvance, cancel, summarize, presence, acknowledge, elapsedSec } from '../../core/timer.js';
-import { conditionRows, stepRows, beanFacts } from '../../core/facts.js';
+import { conditionRows, stepRows, bagFacts, daysLine } from '../../core/facts.js';
 import { WORDS, END_STATE_WORDS, endStateKey, josa, DECAF_ASSIST } from '../../core/words.js';
 import { n2,
   createBrew, newId, round1, formatSec, grindActual, formatDelta, timingVerdict, netServerWeight, linkWeights, dilutionView,
-  beanStock, daysSince, timerOf, DRIPPERS, FILTERS, POUR_METHODS, END_STATES, createDripper,
+  beanStock, bagStock, bagDays, beanBags, activeBag, inFreezer, setBagState, formatDay, BAG_STATES, timerOf, FILTERS, POUR_METHODS, END_STATES, isActive, activeChoices,
 } from '../../core/schema.js';
 import { findPrevious, compareTimer } from '../../core/diff.js';
 import { logEvent } from '../../core/log.js';
@@ -20,7 +20,8 @@ import { keepAwake, releaseAwake } from '../../platform/wakelock.js';
 import { brewNotFound, adviceView } from './records.js';
 import { advicePatch, lastAdvised, appliedValues, followRecord } from '../../core/adviceImport.js';
 import { splitDose, ratioPct } from '../../core/blend.js';
-import { DRIPPER_CATALOG, catalogFields, catalogName } from '../../data/drippers.js';
+import { FILTER_CATALOG, findFilter, filterLine } from '../../data/filters.js';
+import { POUR_GUIDE, GUIDE_SOURCE_WORDS } from '../../data/pourMethods.js';
 import { dripperSummary } from './gear.js';
 import { measureImportButton, measureSummary, measureView } from '../measureImport.js';
 import { measurementOf } from '../../core/grindMeasure.js';
@@ -100,22 +101,30 @@ function defaultsFor(recipeId) {
   const last = brews[0];
   const lastSame = brews.find((b) => b.recipe.id === recipe.id);
   const c = last?.conditions;
-  // 다 쓴(소모) 원두는 다시 고르지 않는다(9/25)
+  // 봉투가 모두 소비된 원두는 다시 고르지 않는다(9/25 · 9/26 B안)
   const lastBean = last?.bean?.id ? store.get('beans', last.bean.id) : null;
-  // 블렌드 템플릿으로 섞었으면 그 템플릿(9/26 — 지운 템플릿이면 고르지 않는다)
+  const lastBeanLive = lastBean && !beanStock(lastBean, [], [], store.list('bags')).consumed;
+  // 블렌드 템플릿으로 섞었으면 그 템플릿(9/26 — 지운 템플릿이면 고르지 않는다 · 9/27 비활성 템플릿도)
   const lastBlend = last?.bean?.blendId ? store.get('blends', last.bean.blendId) : null;
+  // 그라인더·드리퍼는 직전 기록의 것 — 비활성(9/27)이거나 지웠으면 활성인 첫 번째로
+  const liveGrinder = (id) => (id && isActive(store.get('grinders', id)) && store.get('grinders', id)) || store.list('grinders').find(isActive) || null;
+  const liveDripper = (id) => (id && isActive(store.get('drippers', id)) && store.get('drippers', id)) || store.list('drippers').filter(isActive).sort((a, b) => a.name.localeCompare(b.name, 'ko'))[0] || null;
+  const dripper = liveDripper(c?.dripperId);
   return {
     recipeId: recipe.id,
-    beanId: lastBean && lastBean.status !== 'consumed' ? lastBean.id : null,
-    blendId: lastBlend?.id ?? null,
+    beanId: lastBeanLive ? lastBean.id : null,
+    bagId: null, // null = 자동(사용 중 → 보관 중 순, 9/26 B안)
+    grindBeanState: null, // 갈 때 원두 상태(frozen|room) — null = 봉투 위치로 제안한 처음 값
+    blendId: lastBlend && isActive(lastBlend) ? lastBlend.id : null,
     beanName: last?.bean && !last.bean.id && !last.bean.blendId ? last.bean.name : '',
-    grinderId: c?.grind?.grinderId ?? store.list('grinders')[0]?.id ?? null,
+    grinderId: liveGrinder(c?.grind?.grinderId)?.id ?? null,
     dial: c?.grind?.dial ?? null,
     um: c?.grind?.um ?? null, // 참고 µm(보조, 선택) — 직전 기록과 같은 그라인더·다이얼에서 이어받는다
     umSd: c?.grind?.umSd ?? null, // 참고 µm 의 표준편차(선택) — 사진 측정 도구가 평균과 함께 낸다
-    // 드리퍼는 등록 목록에서 ID 로 고른다(9/26 — 기록이 ID 로 가리켜 이름을 고치면 따라간다)
-    dripperId: c?.dripperId ?? store.list('drippers')[0]?.id ?? null,
-    dripper: c?.dripper ?? store.list('drippers')[0]?.name ?? DRIPPERS[0],
+    // 드리퍼는 등록 목록에서 ID 로 고른다(9/26 — 기록이 ID 로 가리켜 이름을 고치면 따라간다).
+    // 9/27: 활성인 내 드리퍼만 — 없으면 비워 두고 사용자가 등록한다(등록하지 않은 기본 드리퍼 이름을 채우지 않는다)
+    dripperId: dripper?.id ?? null,
+    dripper: dripper?.name ?? '',
     filter: c?.filter ?? FILTERS[0],
     rinsed: c?.rinsed ?? null,
     pourMethod: c?.pourMethod ?? POUR_METHODS[0],
@@ -145,13 +154,15 @@ export function prepScreen() {
     const plan = buildPlan(recipe, dose, customHints(recipe.id), { waterG: d.ratio != null ? dose * d.ratio : null });
     const iceG = d.style === 'hot' ? 0 : d.iceG ?? plan.iceG;
     const advice = scaleAdvice(recipe, d.doseG);
-    // 다 쓴(소모) 원두는 목록에서 뺀다 — 지금 골라 둔 것이면 남긴다(9/25)
-    const beans = store.list('beans').filter((b) => b.status !== 'consumed' || b.id === d.beanId).sort((a, b) => a.name.localeCompare(b.name, 'ko'));
+    // 봉투가 모두 소비된 원두는 목록에서 뺀다 — 지금 골라 둔 것이면 남긴다(9/25 · 9/26 B안)
+    const allBags = store.list('bags');
+    const beans = store.list('beans').filter((b) => !beanStock(b, [], [], allBags).consumed || b.id === d.beanId).sort((a, b) => a.name.localeCompare(b.name, 'ko'));
     const bean = d.beanId ? store.get('beans', d.beanId) : null;
     // 블렌드 템플릿(9/26 사용자 요청 — 추출할 때 가진 원두를 비율대로 섞기): 고르면 원두량을 비율대로 나눈다
-    const blends = store.list('blends').sort((a, b) => a.name.localeCompare(b.name, 'ko'));
+    // 비활성 템플릿·그라인더(9/27)는 목록에서 뺀다 — 지금 골라 둔 것이면 남긴다
+    const blends = activeChoices(store.list('blends'), d.blendId).sort((a, b) => a.name.localeCompare(b.name, 'ko'));
     const blend = d.blendId ? store.get('blends', d.blendId) : null;
-    const grinders = store.list('grinders');
+    const grinders = activeChoices(store.list('grinders'), d.grinderId);
     const grinder = grinders.find((g) => g.id === d.grinderId) ?? null;
 
     const beanSelect = h(
@@ -159,9 +170,10 @@ export function prepScreen() {
       {
         onChange: (e) => {
           const v = e.target.value;
-          set(v === '__free__' ? { beanId: null, blendId: null, beanName: d.beanName || ' ' }
-            : v.startsWith('blend:') ? { beanId: null, blendId: v.slice(6), beanName: '' }
-            : { beanId: v || null, blendId: null, beanName: '' });
+          const reset = { bagId: null, grindBeanState: null };
+          set(v === '__free__' ? { ...reset, beanId: null, blendId: null, beanName: d.beanName || ' ' }
+            : v.startsWith('blend:') ? { ...reset, beanId: null, blendId: v.slice(6), beanName: '' }
+            : { ...reset, beanId: v || null, blendId: null, beanName: '' });
         },
       },
       h('option', { value: '' }, '선택 안 함'),
@@ -207,6 +219,7 @@ export function prepScreen() {
       section(
         '원두',
         field('원두', beanSelect, bean ? beanStatusLine(bean, d.doseG) : null),
+        bean ? bagField(bean) : null,
         blend ? blendParts(blend) : null,
         !d.beanId && !d.blendId && d.beanName
           ? field('원두 이름', h('input', { type: 'text', value: d.beanName.trim(), onChange: (e) => set({ beanName: e.target.value }, false) }))
@@ -223,7 +236,7 @@ export function prepScreen() {
         decafAssist(grinder),
         grinders.length
           ? field('그라인더', h('select', { onChange: (e) => set({ grinderId: e.target.value }) }, ...grinders.map((g) => h('option', { value: g.id, selected: g.id === d.grinderId }, g.name))))
-          : h('div', { class: 'hint' }, '등록된 그라인더가 없습니다. 영점을 쓰려면 설정에서 등록하세요.'),
+          : h('div', { class: 'hint' }, store.list('grinders').length ? '활성 그라인더가 없습니다. 원두 탭 → 그라인더에서 [다시 활성화]하세요.' : '등록된 그라인더가 없습니다. 영점을 쓰려면 원두 탭 → 그라인더에서 등록하세요.'),
         // 그라인더 표시값을 넣으면 영점 반영값을 아래에 보인다(사용자 요청 9/25 · 용어 9/26 결정)
         field(termOf(WORDS.grindDial), stepper({ value: d.dial, step: 1, min: 0, max: 999, onChange: (v) => set({ dial: v }) }), grindLine(grinder)),
         // 보조값(사용자 결정 9/24): 사진으로 잰 값이나 변환 사이트의 추정치를 직접 적는다. 앱은 이 값으로 µm 를 만들지 않고,
@@ -248,10 +261,9 @@ export function prepScreen() {
       section(
         '도구',
         dripperField(),
-        field('필터', choiceList({ options: usedValues((b) => b.conditions.filter, FILTERS), value: d.filter, onChange: (v) => set({ filter: v }, false) })),
+        filterField(),
         field(termOf(WORDS.rinse), chips({ options: ['함', '안 함'], selected: d.rinsed == null ? null : d.rinsed ? '함' : '안 함', describe: { 함: WORDS.rinse.on, '안 함': WORDS.rinse.off }, onChange: (v) => set({ rinsed: v == null ? null : v === '함' }) })),
-        field(WORDS.pourMethod.label, choiceList({ options: usedValues((b) => b.conditions.pourMethod, POUR_METHODS), value: d.pourMethod, onChange: (v) => set({ pourMethod: v }, false) }),
-          `레시피 추천: ${recipe.pourMethod ?? '원문에 붓는 모양은 없음'} (붓기 팁은 아래 「이번 계획」)`),
+        pourField(recipe),
       ),
       section(
         '물·얼음',
@@ -306,12 +318,77 @@ export function prepScreen() {
   }
 
   // 원두 상태 한 줄: 로스팅 후·개봉 후 며칠, 남은 원두 추정(9/25). 이번 원두량보다 적게 남았으면 알린다.
+  // 원두 상태 한 줄(9/26 B안 — 고른 봉투): 로스팅 후(실온·냉동) · 개봉 후 · 남은 양. 이번 원두량보다 적게 남았으면 알린다.
   function beanStatusLine(bean, doseG) {
-    const st = beanStock(bean, store.brews(), store.list('beans'));
-    const facts = beanFacts(bean, store.brews(), Date.now(), store.list('beans'));
-    if (!facts.length) return null;
+    const bag = pickedBag(bean);
+    if (!bag) return '봉투가 없습니다. 원두 화면에서 봉투를 더해 주세요.';
+    const facts = bagFacts(bag, store.brews(), store.list('beans'));
+    const st = bagStock(bag, store.brews(), store.list('beans'));
     const short = st.remainingG != null && doseG && st.remainingG < doseG;
-    return h('span', { class: short ? 'warn-text' : '' }, facts.join(' · '), short ? ` — 이번 원두량(${n2(doseG)}g)보다 적습니다` : '');
+    return h('span', { class: short ? 'warn-text' : '' }, facts.join(' · ') || BAG_STATES[bag.state], short ? ` — 이번 원두량(${n2(doseG)}g)보다 적습니다` : '');
+  }
+  // 이번에 쓸 봉투: 고른 것(모두 소비되지 않았으면) → 없으면 자동(사용 중 → 사용 중(냉동) → 보관 중(실온) → 보관 중(냉동))
+  function pickedBag(bean) {
+    const chosen = d.bagId ? store.get('bags', d.bagId) : null;
+    return chosen && chosen.beanId === bean.id && chosen.state !== 'consumed' ? chosen : activeBag(bean.id, store.list('bags'));
+  }
+  // 봉투 고르기(두 봉 이상일 때) · 갈 때 원두 상태(냉동한 적이 있는 봉투일 때 — 9/26 사용자 결정: 자동이 아니라 고른다, 처음 값만 봉투 위치로 제안)
+  function bagField(bean) {
+    const live = beanBags(bean.id, store.list('bags')).filter((g) => g.state !== 'consumed');
+    const bag = pickedBag(bean);
+    const label = (g) => [BAG_STATES[g.state], g.roastedOn ? `제조 ${g.roastedOn}` : null, (() => { const r = bagStock(g, store.brews(), store.list('beans')).remainingG; return r != null ? `남은 약 ${n2(Math.max(0, r))}g` : null; })()].filter(Boolean).join(' · ');
+    const frozenBefore = bag && (inFreezer(bag) || bag.freezes?.length);
+    const grind = d.grindBeanState ?? (inFreezer(bag) ? 'frozen' : 'room');
+    return [
+      live.length > 1
+        ? field('봉투', h('select', { onChange: (e) => set({ bagId: e.target.value, grindBeanState: null }) }, ...live.map((g) => h('option', { value: g.id, selected: g.id === bag?.id }, label(g)))), '처음에는 사용 중인 봉투를 고릅니다.')
+        : null,
+      bag && (bag.state === 'stored' || bag.state === 'frozen') ? h('div', { class: 'hint' }, `이 봉투는 ${BAG_STATES[bag.state]}입니다. 추출을 저장하면 「${bag.state === 'frozen' ? BAG_STATES.inUseFrozen : BAG_STATES.inUse}」으로 바꾸고 개봉일을 오늘로 적습니다.`) : null,
+      frozenBefore
+        ? field('갈 때 원두 상태', chips({
+            options: ['냉동 상태로', '실온(해동 뒤)'],
+            selected: grind === 'frozen' ? '냉동 상태로' : '실온(해동 뒤)',
+            onChange: (v) => set({ grindBeanState: v === '냉동 상태로' ? 'frozen' : v ? 'room' : d.grindBeanState }),
+          }), '차갑게 갈면 입자가 더 곱고 고르게 나옵니다(Uman 외 2016). 기록에 남아 AI 공유에도 들어갑니다.')
+        : null,
+    ];
+  }
+
+
+  // 필터(9/26 사용자 요청 — 유명 필터 기본 목록 data/filters.js): 고르면 아래에 특징이 바로 바뀌어 뜬다(칸을 다시 그리지 않고 설명만).
+  // 고른 드리퍼에 맞는 필터(드리퍼 특징의 「필터」)도 함께 보인다. 목록에 없는 것은 [직접 입력…].
+  function filterField() {
+    const box = h('div', { class: 'stack guide-box' });
+    const dp = (d.dripperId && store.get('drippers', d.dripperId)) || null;
+    const draw = () => {
+      const f = findFilter(d.filter);
+      fill(
+        box,
+        f ? h('div', { class: 'hint' }, filterLine(f)) : null,
+        f ? h('div', { class: 'source' }, `${f.material ? `${f.material} · ` : ''}제조사 자료: `, h('a', { href: f.sources[0].url, target: '_blank', rel: 'noopener' }, f.sources[0].label)) : null,
+        dp?.filter ? h('div', { class: 'hint' }, `이 드리퍼에 맞는 필터: ${dp.filter}`) : null,
+      );
+    };
+    draw();
+    const options = usedValues((b) => b.conditions.filter, [...FILTERS, ...FILTER_CATALOG.map((f) => f.name)]);
+    return field('필터', h('div', { class: 'stack' }, choiceList({ options, value: d.filter, onChange: (v) => { set({ filter: v }, false); draw(); } }), box));
+  }
+
+  // 붓는 방법(9/26 사용자 요청): 고를 때마다 붓는 모습과 추출 특징 설명이 바뀐다(data/pourMethods.js — 붓는 모습은 제조사 안내, 특징은 참고 글).
+  function pourField(recipe) {
+    const box = h('div', { class: 'stack guide-box' });
+    const draw = () => {
+      const g = POUR_GUIDE[d.pourMethod];
+      fill(
+        box,
+        g ? h('div', { class: 'hint' }, h('b', null, '붓는 모습 '), g.how) : null,
+        g ? h('div', { class: 'hint' }, h('b', null, '추출 특징 '), g.effect) : null,
+        g ? h('div', { class: 'source' }, '출처: ', ...g.sources.flatMap((x, i) => [i ? ' · ' : null, `${GUIDE_SOURCE_WORDS[x.kind]} `, h('a', { href: x.url, target: '_blank', rel: 'noopener' }, x.label)])) : null,
+        h('div', { class: 'hint' }, `레시피 추천: ${recipe.pourMethod ?? '원문에 붓는 모양은 없음'} (붓기 팁은 아래 「이번 계획」)`),
+      );
+    };
+    draw();
+    return field(WORDS.pourMethod.label, h('div', { class: 'stack' }, choiceList({ options: usedValues((b) => b.conditions.pourMethod, POUR_METHODS), value: d.pourMethod, onChange: (v) => { set({ pourMethod: v }, false); draw(); } }), box));
   }
 
   // 블렌드 템플릿(9/26): 원두량을 비율대로 나눈 무게와 원두마다 남은 양. 다 쓴·지운·모자란 원두는 알린다(고르는 것은 사용자 몫).
@@ -325,8 +402,9 @@ export function prepScreen() {
       { class: 'blend-parts' },
       ...parts.map((p) => {
         const b = store.get('beans', p.id);
-        const st = b ? beanStock(b, brews, all) : null;
-        const warn = !b ? '등록에서 지운 원두' : b.status === 'consumed' ? '소모로 바꾼 원두' : st.remainingG != null && st.remainingG < p.g ? `남은 약 ${n2(Math.max(0, st.remainingG))}g — 모자랍니다` : null;
+        const g = b ? activeBag(b.id, store.list('bags')) : null; // 이 원두에서 덜어 낼 봉투(자동)
+        const st = g ? bagStock(g, brews, all) : null;
+        const warn = !b ? '등록에서 지운 원두' : !g ? '봉투가 모두 소비된 원두' : st.remainingG != null && st.remainingG < p.g ? `남은 약 ${n2(Math.max(0, st.remainingG))}g — 모자랍니다` : null;
         return h(
           'div',
           { class: 'row-line' },
@@ -338,35 +416,26 @@ export function prepScreen() {
     );
   }
 
-  // 드리퍼(9/26): 등록한 드리퍼(내 드리퍼)와 기본 목록(data/drippers.js — 사용자 결정 «유명 드리퍼 모두 기본 등록»)에서 고른다.
-  // 기본 목록에서 고르면 그 자리에서 내 드리퍼로 등록해 기록이 ID 로 가리키게 한다. 옛 준비 초안(이름만)은 이름으로 찾아 맞춘다.
+  // 드리퍼(9/26): 등록한 드리퍼(내 드리퍼)에서 고른다. 옛 준비 초안(이름만)은 이름으로 찾아 맞춘다.
+  // 9/27 사용자 결정: 기본 목록(data/drippers.js)은 여기 뜨지 않는다 — 드리퍼 화면에서 등록해야 뜬다. 비활성 드리퍼도 빠진다(골라 둔 것이면 남김).
   function dripperField() {
-    const list = store.list('drippers').sort((a, b) => a.name.localeCompare(b.name, 'ko'));
-    const cur = (d.dripperId && store.get('drippers', d.dripperId)) || list.find((x) => x.name === d.dripper) || null;
-    const taken = new Set(list.filter((x) => x.catalogKey).map((x) => `${x.catalogKey}|${x.size}`));
-    const fromCatalog = DRIPPER_CATALOG.flatMap((c) => c.sizes.filter(([n]) => !taken.has(`${c.key}|${n}`)).map(([n]) => [`catalog:${c.key}:${n}`, catalogName(c.key, n)]));
+    const all = store.list('drippers');
+    const cur = (d.dripperId && store.get('drippers', d.dripperId)) || all.find((x) => x.name === d.dripper) || null;
+    const list = activeChoices(all, cur?.id).sort((a, b) => a.name.localeCompare(b.name, 'ko'));
     const onPick = (v) => {
-      if (!v.startsWith('catalog:')) {
-        const dp = store.get('drippers', v);
-        return set({ dripperId: dp?.id ?? null, dripper: dp?.name ?? '' }, false);
-      }
-      const [, key, size] = v.split(':');
-      let name = catalogName(key, size);
-      if (list.some((x) => x.name === name)) name = `${name} (기본 목록)`;
-      const dp = store.put('drippers', createDripper({ name, ...catalogFields(key, size) }));
-      logEvent('dripper.save', { dripperId: dp.id, name: dp.name, renamedFrom: null, catalogKey: key, filled: null, edited: [], via: 'prep' });
-      toast(`「${dp.name}」을 내 드리퍼에 넣었습니다. 재질은 드리퍼 칸에서 고를 수 있어요.`);
-      set({ dripperId: dp.id, dripper: dp.name });
+      const dp = store.get('drippers', v);
+      set({ dripperId: dp?.id ?? null, dripper: dp?.name ?? '' }); // 다시 그려 드리퍼 특징·맞는 필터 안내를 바꾼다
     };
     return [
-      field(
-        '드리퍼',
-        h('select', { onChange: (e) => onPick(e.target.value) },
-          cur ? null : h('option', { value: '', selected: true, disabled: true }, '선택'),
-          list.length ? h('optgroup', { label: '내 드리퍼' }, ...list.map((x) => h('option', { value: x.id, selected: x.id === cur?.id }, x.name))) : null,
-          fromCatalog.length ? h('optgroup', { label: '기본 목록(고르면 내 드리퍼에 등록)' }, ...fromCatalog.map(([v, label]) => h('option', { value: v }, label))) : null),
-        cur ? dripperSummary(cur) || null : null,
-      ),
+      list.length
+        ? field(
+            '드리퍼',
+            h('select', { onChange: (e) => onPick(e.target.value) },
+              cur ? null : h('option', { value: '', selected: true, disabled: true }, d.dripper ? `${d.dripper}(등록 안 됨)` : '선택'),
+              ...list.map((x) => h('option', { value: x.id, selected: x.id === cur?.id }, isActive(x) ? x.name : `${x.name}(비활성)`))),
+            cur ? dripperSummary(cur) || null : null,
+          )
+        : field('드리퍼', h('div', { class: 'hint' }, all.length ? '활성 드리퍼가 없습니다. 드리퍼 화면에서 [다시 활성화]하거나 등록하세요.' : '등록한 드리퍼가 없습니다. 아래에서 등록하세요(기본 목록에서 고를 수 있습니다).')),
       linkButton({ href: '#/drippers', label: '드리퍼 등록·특징 고치기', returnToPrep: true }),
     ];
   }
@@ -374,7 +443,7 @@ export function prepScreen() {
   // 이 원두·그라인더로 잰 분쇄 측정(9/26 — 원두별로 모은 것 중 가장 최근): 있으면 알리고 한 번에 맞추는 단추
   function beanMeasureHint(grinder) {
     if (!d.beanId || !grinder) return null;
-    const m = store.list('measurements').filter((x) => x.beanId === d.beanId && x.grinderId === grinder.id).sort((a, b) => (b.importedAt ?? '').localeCompare(a.importedAt ?? ''))[0];
+    const m = store.list('measurements').filter((x) => x.beanId === d.beanId && x.grinderId === grinder.id && isActive(x)).sort((a, b) => (b.importedAt ?? '').localeCompare(a.importedAt ?? ''))[0];
     if (!m) return null;
     const { photo, schemaVersion, updatedAt, id, ...rest } = m;
     return h(
@@ -552,10 +621,14 @@ export function prepScreen() {
     const tpl = d.blendId ? store.get('blends', d.blendId) : null;
     const parts = tpl ? splitDose(tpl.parts.map((p) => ({ ...p, name: store.get('beans', p.beanId)?.name ?? p.name })), d.doseG) : [];
     if (tpl && !parts.length) return toast('블렌드 템플릿에 비율을 적은 원두가 없습니다.');
+    // 봉투(9/26 B안): 기록은 원두와 봉투를 가리키고, 그때의 일수(로스팅·실온·냉동·개봉)를 적어 둔다 — 영점처럼 그때 값
+    const regBean = d.beanId ? store.get('beans', d.beanId) : null;
+    const bag = regBean ? pickedBag(regBean) : null;
+    const partsWithBag = parts.map((p) => ({ ...p, bagId: activeBag(p.id, store.list('bags'))?.id ?? null }));
     const bean = tpl
-      ? { id: null, name: tpl.name, blendId: tpl.id, parts }
+      ? { id: null, name: tpl.name, blendId: tpl.id, parts: partsWithBag }
       : d.beanId
-      ? { id: d.beanId, name: store.get('beans', d.beanId)?.name ?? '' }
+      ? { id: d.beanId, name: regBean?.name ?? '', ...(bag ? { bagId: bag.id, age: bagDays(bag) } : {}) }
       : d.beanName.trim()
         ? { id: null, name: d.beanName.trim() }
         : null;
@@ -571,6 +644,7 @@ export function prepScreen() {
       filter: d.filter,
       rinsed: d.rinsed,
       pourMethod: d.pourMethod,
+      grindBeanState: bag && (inFreezer(bag) || bag.freezes?.length) ? d.grindBeanState ?? (inFreezer(bag) ? 'frozen' : 'room') : null,
       followedAdvice: d.followedAdvice ? followRecord(d.followedAdvice, { grindDial: d.dial, doseG: d.doseG, hotWaterG: plan.hotWaterG, tempC: d.tempC }) : null,
     };
     // 얼음이 추천보다 적으면 그만큼을 추출 뒤 가수로 채우는 것이 계획이다(9/25) — 결과 화면 가수의 처음 값이 된다
@@ -603,6 +677,14 @@ function saveFinished(active, state, now, navigate = true) {
   logEvent('brew.end', { totalSec: timer.totalSec, plannedTotalSec: timer.plannedTotalSec, deltaSec: round1(timer.totalSec - timer.plannedTotalSec), verdict: timingVerdict(timer.totalSec - timer.plannedTotalSec).kind, via: state.endVia ?? null }, { brewId, now });
   store.put('brews', brew);
   logEvent('brew.saved', { where: store.mode }, { brewId });
+  // 보관 중이던 봉투로 내렸으면 사용 중으로(개봉일 = 오늘) — 준비 화면에서 미리 알린 대로(9/26 B안)
+  const bag = brew.bean?.bagId ? store.get('bags', brew.bean.bagId) : null;
+  if (bag && (bag.state === 'stored' || bag.state === 'frozen')) {
+    const next = bag.state === 'frozen' ? 'inUseFrozen' : 'inUse';
+    const copy = setBagState(structuredClone(bag), next, formatDay(new Date(now)));
+    store.put('bags', copy);
+    logEvent('bag.open', { bagId: bag.id, beanId: bag.beanId, from: bag.state, to: next }, { brewId });
+  }
   const fa = brew.followedAdvice;
   if (fa) logEvent('advice.follow', { fromBrewId: fa.fromBrewId, applied: Object.keys(fa.applied), adjusted: fa.adjusted }, { brewId });
   clearActive();
@@ -1034,9 +1116,11 @@ export function resultScreen(id) {
   // 9/26: 무게 칸끼리 서로 따라 바뀐다(core/schema.js linkWeights) — 가수 전 + 가수 = 가수 후, 가수 후 + 추가 얼음 = 얼음 넣은 뒤.
   // 어느 칸을 고쳐도 칸이 사라지지 않는다(전에는 두 무게를 넣으면 가수 칸이 값만 보이는 칸으로 바뀌었다).
   const iced = b.conditions.style !== 'hot';
+  // 직전에 쓴 서버 — 비활성(9/27)이거나 지웠으면 활성인 첫 번째
   function lastServer(servers) {
+    const live = servers.filter(isActive);
     const lastId = store.brews().find((x) => x.result?.server?.id)?.result.server.id;
-    const pick = servers.find((x) => x.id === lastId) ?? servers[0];
+    const pick = live.find((x) => x.id === lastId) ?? live[0];
     return pick ? { id: pick.id, name: pick.name, tareG: pick.tareG } : null;
   }
   // 칸 하나를 고치면 따라 바뀌는 칸까지 한 번에 저장한다(로그는 고친 칸 하나 + 따라 바뀐 칸들)
@@ -1055,7 +1139,7 @@ export function resultScreen(id) {
 
   function serverBlock() {
     const r = b.result;
-    const servers = store.list('servers');
+    const all = store.list('servers');
     const sw = toggle({
       checked: weightOn(),
       label: '서버 무게 재기',
@@ -1069,8 +1153,10 @@ export function resultScreen(id) {
       },
     });
     if (!weightOn()) return [sw];
-    const srv = r.server ?? lastServer(servers);
-    const sel = srv?.id ?? '__custom__';
+    const srv = r.server ?? lastServer(all);
+    // 지운 서버(9/27 — ID 를 뗀 기록, 다른 기기에서 지워 ID 만 남은 기록)는 「무게만 적기」로 보여 무게를 고칠 수 있게
+    const sel = srv?.id && all.some((x) => x.id === srv.id) ? srv.id : '__custom__';
+    const servers = activeChoices(all, sel);
     const select = h(
       'select',
       {
@@ -1080,8 +1166,8 @@ export function resultScreen(id) {
           draw();
         },
       },
-      ...servers.map((x) => h('option', { value: x.id, selected: x.id === sel }, `${x.name} · ${n2(x.tareG ?? '?')}g`)),
-      h('option', { value: '__custom__', selected: sel === '__custom__' }, '등록 없이 무게만 적기'),
+      ...servers.map((x) => h('option', { value: x.id, selected: x.id === sel }, `${x.name} · ${n2(x.tareG ?? '?')}g${isActive(x) ? '' : '(비활성)'}`)),
+      h('option', { value: '__custom__', selected: sel === '__custom__' }, sel === '__custom__' && srv?.name ? `${srv.name}(등록에서 지움 — 이 기록에만)` : '등록 없이 무게만 적기'),
     );
     const net = netServerWeight({ ...r, server: srv });
     return [

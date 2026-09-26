@@ -74,6 +74,10 @@ export const termOf = (w) => term(w.label, w.sub);
 export function section(title, ...children) {
   return h('section', { class: 'card' }, title ? h('h2', null, title) : null, ...children);
 }
+// 비활성 칸(9/27 — 원두의 「소비된 원두」와 같은 모양): 활성 목록 아래에 두는 회색 상자
+export function inactiveSection(title, ...children) {
+  return h('section', { class: 'card inactive-list' }, h('h2', null, title), ...children);
+}
 
 export function field(label, control, hint) {
   return h('div', { class: 'field' }, h('div', { class: 'field-label' }, label), control, hint ? h('div', { class: 'hint' }, hint) : null);

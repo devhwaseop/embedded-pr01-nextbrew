@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { formatGrind, grindActual, formatSec, formatDelta, createBrew, emptySurvey, timingVerdict, netServerWeight, SURVEY_ITEMS } from '../app/js/core/schema.js';
-import { timerOf, linkWeights, measuredDilution, dilutionView, createBean, beanAutoName, beanNameIsAuto, purchasedGrams, beanStock, roastedFromBestBefore, daysSince, ROASTS } from '../app/js/core/schema.js';
+import { timerOf, linkWeights, measuredDilution, dilutionView, createBean, beanAutoName, beanNameIsAuto, purchasedGrams, beanStock, roastedFromBestBefore, daysSince, ROASTS, createBag, bagStock, bagDays, setBagState, activeBag } from '../app/js/core/schema.js';
 import { buildPlan, scaleAdvice, stepHint } from '../app/js/core/recipe.js';
 import { startBrew, readyBrew, elapsedSec, view, advance, undoAdvance, cancel, summarize, presence, acknowledge, checkAfterSec, askGapSec } from '../app/js/core/timer.js';
 import { buildSharePackage, findShareRelations, toMarkdown, toJSON, shareFileName, shareSheetName, defaultSharePrompt, SHARE_ROLES } from '../app/js/core/share.js';
@@ -324,7 +324,7 @@ test('이 기기 → 계정 옮기기: 로그는 두 번 옮겨도 한 벌, 계�
   cloud.appendLog({ t: 1, ev: 'app.start' });
   // 전역 store 를 쓰지 않는다(로그 수신처가 붙어 다른 테스트에 번진다) — 계정에 있는지는 함수로 넘긴다
   const inCloud = async () => { const all = await cloud.loadAll(); return (c, id) => (all[c] ?? []).some((d) => d.id === id); };
-  assert.deepEqual(localOnlyCounts(localMem, 'nb', await inCloud()), { total: 1, brews: 1, beans: 0, grinders: 0, servers: 0, recipes: 0, drippers: 0, measurements: 0, blends: 0 });
+  assert.deepEqual(localOnlyCounts(localMem, 'nb', await inCloud()), { total: 1, brews: 1, beans: 0, grinders: 0, servers: 0, recipes: 0, drippers: 0, measurements: 0, blends: 0, bags: 0 });
   const n1 = await copyAll(local, cloud);
   assert.equal(n1.logs, 1);
   assert.equal(n1.logsSkipped, 1);
@@ -375,16 +375,16 @@ test('AI 공유 묶음: 이번 + 직전(무관) + 레시피·원두가 같은 �
   const pkg2 = buildSharePackage({ brews: [cur, old], current: cur });
   assert.deepEqual(pkg2.brews.map((b) => [b.id, b.roles]), [['cur', ['current']], ['old', ['previous', 'sameRecipeAndBean']]]);
   const md = toMarkdown(pkg2);
-  assert.match(md, /직전 추출과 같은 기록/);
+  assert.match(md, /「직전 추출\(레시피·원두 무관\)」과 같은 기록/);
   assert.match(md, /## 직전 추출\(레시피·원두 무관\) · 레시피와 원두가 같은 가장 최근 추출/);
   assert.match(md, /\| 1차 푸어 \| 100g \| 1:10 \| 1:10 \| 제때 \|/);
 
-  // 「이 기록만」: 비교 기록이 있어도 넣지 않고, MD 에는 «없음»이 아니라 «담지 않음»으로 적는다
+  // 「단일 기록만」(9/26 「이 기록만」에서 이름 바꿈): 비교 기록이 있어도 넣지 않고, MD 에는 «없음»이 아니라 «담지 않음»으로 적는다
   const single = buildSharePackage({ brews: all, current: cur, scope: 'single' });
   assert.equal(single.scope, 'single');
   assert.deepEqual(single.brews.map((b) => b.id), ['cur']);
-  assert.deepEqual(single.relations, { current: 'cur', previous: null, sameRecipeAndBean: null });
-  assert.match(toMarkdown(single), /\| 직전 추출\(레시피·원두 무관\) \| 담지 않음\(이 기록만 공유\) \|/);
+  assert.deepEqual(single.relations, { current: 'cur', previous: null, sameBean: null, sameRecipe: null, sameRecipeAndBean: null, compare: [] });
+  assert.match(toMarkdown(single), /\| 직전 추출\(레시피·원두 무관\) \| 담지 않음\(단일 기록만 공유\) \|/);
 
   // 비교할 기록이 없으면 이번 것만
   const pkg3 = buildSharePackage({ brews: [cur], current: cur });
@@ -639,7 +639,7 @@ test('가수와 비율: 얼음이 추천보다 적으면 모자란 만큼 가수
   assert.equal(dilutionView(hot).targetWaterG, 150);
 });
 
-test('원두: 이름 자동 조합, 구매 무게 단위, 기록으로 남은 원두 추정·10g 이하 알림, 소비기한에서 제조일 역산', () => {
+test('원두: 이름 자동 조합, 구매 무게 단위, 봉투로 남은 양 추정·10g 이하 알림, 소비기한에서 제조일 역산', () => {
   const bean = createBean({ id: 'b1', country: '에티오피아', region: '예가체프', producer: ' 첼바 ', variety: '', process: '워시드' });
   assert.equal(beanAutoName(bean), '에티오피아 예가체프 첼바 워시드');
   assert.equal(beanNameIsAuto(bean), true);
@@ -647,16 +647,20 @@ test('원두: 이름 자동 조합, 구매 무게 단위, 기록으로 남은 �
   assert.equal(purchasedGrams({ purchased: { amount: 12, unit: 'oz' } }), 340.2);
   assert.equal(purchasedGrams({ purchased: { amount: 0.2, unit: 'kg' } }), 200);
   assert.equal(purchasedGrams({ purchased: null }), null);
-  bean.purchased = { amount: 50, unit: 'g' };
-  const brews = [makeBrew({ id: 'a', at: 1_000, presses: [40, 70, 130] }), makeBrew({ id: 'b', at: 2_000, presses: [40, 70, 130] })];
+  // 9/26 B안: 남은 양은 봉투마다(구매 무게 − 그 봉투로 내린 기록)
+  const bag = createBag({ id: 'g1', beanId: 'b1', purchased: { amount: 50, unit: 'g' }, state: 'inUse' });
+  const inBag = (x) => ({ ...x, bean: { ...x.bean, bagId: 'g1' } });
+  const brews = [inBag(makeBrew({ id: 'a', at: 1_000, presses: [40, 70, 130] })), inBag(makeBrew({ id: 'b', at: 2_000, presses: [40, 70, 130] }))];
   brews.push(makeBrew({ id: 'c', at: 3_000, presses: [40, 70, 130], bean: { id: 'other', name: '다른 원두' } }));
-  let st = beanStock(bean, brews);
+  let st = bagStock(bag, brews);
   assert.deepEqual([st.usedG, st.brews, st.remainingG, st.low], [32, 2, 18, false]);
-  brews.push(makeBrew({ id: 'd', at: 4_000, presses: [40, 70, 130] }));
-  st = beanStock(bean, brews);
+  brews.push(inBag(makeBrew({ id: 'd', at: 4_000, presses: [40, 70, 130] })));
+  st = bagStock(bag, brews);
   assert.deepEqual([st.remainingG, st.low], [2, true]);
-  assert.equal(beanStock({ ...bean, status: 'consumed' }, brews).low, false); // 소모로 바꾸면 알림이 멈춘다
-  assert.equal(beanStock({ ...bean, purchased: null }, brews).low, false); // 구매 무게가 없으면 세지 않는다
+  assert.equal(bagStock({ ...bag, state: 'consumed' }, brews).low, false); // 모두 소비됨으로 바꾸면 알림이 멈춘다
+  assert.equal(bagStock({ ...bag, purchased: null }, brews).low, false); // 구매 무게가 없으면 세지 않는다
+  const all = beanStock(bean, brews, [], [bag, createBag({ id: 'g2', beanId: 'b1', purchased: { amount: 200, unit: 'g' }, state: 'frozen' })]);
+  assert.deepEqual([all.remainingG, all.low, all.consumed, all.counts], [202, true, false, { inUse: 1, frozen: 1 }]);
   assert.equal(roastedFromBestBefore('2027-09-25'), '2026-09-25');
   assert.equal(roastedFromBestBefore('2027-03-31', 1), '2027-02-28');
   assert.equal(roastedFromBestBefore('', 12), null);
@@ -681,7 +685,7 @@ test('공유창 파일 이름: 크롬이 막는 .md·.json 은 .txt 로 보낸�
 test('AI 공유 기본 프롬프트: 파일의 역할 이름을 그대로 쓰고, 기본 질문은 다음 추출 조정 제안', () => {
   const p = defaultSharePrompt();
   // 「고른 기록」(9/26 여러 건 공유)은 따로 쓰는 프롬프트라 한 건 공유의 세 역할만 본다
-  for (const role of ['current', 'previous', 'sameRecipeAndBean'].map((k) => SHARE_ROLES[k])) assert.ok(p.includes(`「${role}」`), `역할 이름이 프롬프트와 다름: ${role}`);
+  for (const role of ['current', 'previous', 'sameBean', 'sameRecipe', 'sameRecipeAndBean'].map((k) => SHARE_ROLES[k])) assert.ok(p.includes(`「${role}」`), `역할 이름이 프롬프트와 다름: ${role}`);
   assert.match(defaultSharePrompt('selected'), /고른 기록 여러 건/);
   assert.match(p, /다음 추출에서 무엇을 바꾸면 좋을지/);
   assert.match(p, /지어내지 말고/);
@@ -1025,15 +1029,17 @@ test('블렌드 템플릿: 원두량을 비율대로 나누고, 반올림 차이
 });
 
 test('블렌드 남은 양: 템플릿으로 섞은 기록은 나눈 무게만, 미리 섞은 블렌드에 넣은 무게는 «섞음»으로 뺀다', () => {
-  const a = createBean({ id: 'a', name: 'A', purchased: { amount: 200, unit: 'g' } });
-  const mix = createBean({ id: 'm', name: 'A + B', blend: { by: 'me', parts: [{ beanId: 'a', name: 'A', g: 50 }, { beanId: 'b', name: 'B', g: 30 }] } });
-  const single = makeBrew({ id: 'x1', at: 1_000, presses: [40, 70, 130], bean: { id: 'a', name: 'A' } }); // 원두량 16g
-  const tpl = makeBrew({ id: 'x2', at: 2_000, presses: [40, 70, 130], bean: { id: null, name: 'A + B', blendId: 'blend_1', parts: [{ id: 'a', name: 'A', ratio: 2, g: 12 }, { id: 'b', name: 'B', ratio: 1, g: 4 }] } });
-  const fromMix = makeBrew({ id: 'x3', at: 3_000, presses: [40, 70, 130], bean: { id: 'm', name: 'A + B' } });
-  const st = beanStock(a, [single, tpl, fromMix], [a, mix]);
+  // 9/26 B안: 봉투 기준 — 원두 A 의 봉투 gA 에서 기록·템플릿·미리 섞은 블렌드가 뺀다
+  const gA = createBag({ id: 'gA', beanId: 'a', purchased: { amount: 200, unit: 'g' }, state: 'inUse' });
+  const gM = createBag({ id: 'gM', beanId: 'm', purchased: { amount: 80, unit: 'g' }, state: 'inUse' }); // 섞은 블렌드의 봉투 = 섞은 무게 합
+  const mix = createBean({ id: 'm', name: 'A + B', blend: { by: 'me', parts: [{ beanId: 'a', name: 'A', g: 50, bagId: 'gA' }, { beanId: 'b', name: 'B', g: 30, bagId: 'gB' }] } });
+  const single = makeBrew({ id: 'x1', at: 1_000, presses: [40, 70, 130], bean: { id: 'a', name: 'A', bagId: 'gA' } }); // 원두량 16g
+  const tpl = makeBrew({ id: 'x2', at: 2_000, presses: [40, 70, 130], bean: { id: null, name: 'A + B', blendId: 'blend_1', parts: [{ id: 'a', name: 'A', ratio: 2, g: 12, bagId: 'gA' }, { id: 'b', name: 'B', ratio: 1, g: 4, bagId: 'gB' }] } });
+  const fromMix = makeBrew({ id: 'x3', at: 3_000, presses: [40, 70, 130], bean: { id: 'm', name: 'A + B', bagId: 'gM' } });
+  const st = bagStock(gA, [single, tpl, fromMix], [mix]);
   assert.deepEqual([st.totalG, st.usedG, st.brews, st.mixedG, st.remainingG], [200, 28, 2, 50, 122]);
-  const ms = beanStock(mix, [single, tpl, fromMix], [a, mix]);
-  assert.deepEqual([ms.totalG, ms.usedG, ms.remainingG], [80, 16, 64]); // 섞은 블렌드의 양 = 섞은 무게 합
+  const ms = bagStock(gM, [single, tpl, fromMix], [mix]);
+  assert.deepEqual([ms.totalG, ms.usedG, ms.remainingG], [80, 16, 64]);
   assert.equal(tpl.bean.blendId, 'blend_1'); // createBrew 가 템플릿 표시를 남긴다
   assert.deepEqual(brewBeanIds(tpl), ['a', 'b']);
   assert.equal(beanRef(tpl), 'blend_1');
@@ -1166,4 +1172,290 @@ test('AI 공유: 기록의 드리퍼 특징을 자료 종류와 함께 싣는다
   assert.match(md, /## 드리퍼 · Kalita Wave 185/);
   assert.match(md, /\| 구멍 \| 구멍 3개 \|/);
   assert.match(md, /\| 자료 \| 제조사 자료 https:\/\/kalitaofficial\.com/);
+});
+
+// ── 9/26 여섯째: 같은 드리퍼 합치기 · 지워진 드리퍼 · 측정 사진 판정 · 필터·붓는 방법 · 원두 프롬프트 ──
+import { sameNameGroups, dripperConflicts } from '../app/js/core/migrate.js';
+import { photoCheck } from '../app/js/core/grindMeasure.js';
+import { FILTER_CATALOG, findFilter, filterLine } from '../app/js/data/filters.js';
+import { POUR_GUIDE } from '../app/js/data/pourMethods.js';
+import { POUR_METHODS } from '../app/js/core/schema.js';
+
+test('같은 드리퍼 합치기: 기기·계정에서 따로 만든 두 벌을 하나로, 기록은 남긴 쪽을 가리키고, 두 번 돌려도 그대로', () => {
+  const a = createDripper({ id: 'dA', name: 'Hario V60 02', ...catalogFields('hario-v60', '02'), updatedAt: '2026-09-26T01:00:00Z' });
+  const b = createDripper({ id: 'dB', name: 'hario  v60 02 ', ...catalogFields('hario-v60', '02'), material: '세라믹', updatedAt: '2026-09-26T02:00:00Z' });
+  const x1 = makeBrew({ id: 'm1', at: 1_000, presses: [40, 70, 130] });
+  const x2 = makeBrew({ id: 'm2', at: 2_000, presses: [40, 70, 130] });
+  const x3 = makeBrew({ id: 'm3', at: 3_000, presses: [40, 70, 130] });
+  x1.conditions.dripperId = 'dB';
+  x2.conditions.dripperId = 'dB';
+  x3.conditions.dripperId = 'dA';
+  const r1 = upgradeData({ brews: [x1, x2, x3], beans: [], drippers: [a, b] }, { drippersSeeded: true });
+  assert.deepEqual(r1.data.drippers.map((d) => d.id), ['dB']); // 기록이 더 많이 가리키는 쪽을 남긴다
+  assert.deepEqual(r1.removed, { drippers: ['dA'] });
+  assert.deepEqual(r1.data.brews.map((x) => x.conditions.dripperId), ['dB', 'dB', 'dB']);
+  assert.equal(r1.steps['brew.dripperMerge'], 1);
+  assert.equal(r1.data.drippers[0].material, '세라믹');
+  const r2 = upgradeData(r1.data, { drippersSeeded: true });
+  assert.deepEqual([r2.steps, r2.removed], [{}, {}]);
+  // 특징이 어긋나면 합치지 않고 알릴 거리로 남긴다
+  const c = createDripper({ id: 'dC', name: '내 드리퍼', shape: 'cone' });
+  const d = createDripper({ id: 'dD', name: '내 드리퍼', shape: 'flat' });
+  const r3 = upgradeData({ brews: [], beans: [], drippers: [c, d] }, { drippersSeeded: true });
+  assert.equal(r3.data.drippers.length, 2);
+  assert.deepEqual(dripperConflicts(c, d), ['shape']);
+  assert.equal(sameNameGroups(r3.data.drippers).length, 1);
+});
+
+test('지워진 드리퍼를 가리키는 기록: 같은 이름 드리퍼가 있으면 다시 잇고, 없으면 이름으로만 남아도 표·공유가 오류 없이 나온다', () => {
+  const live = createDripper({ id: 'dL', name: 'Hario V60 02', ...catalogFields('hario-v60', '02') });
+  const y1 = makeBrew({ id: 'g1', at: 1_000, presses: [40, 70, 130] });
+  y1.conditions.dripperId = 'gone1'; // 이름 'Hario V60 02'
+  const y2 = makeBrew({ id: 'g2', at: 2_000, presses: [40, 70, 130], dripper: '없어진 드리퍼' });
+  y2.conditions.dripperId = 'gone2';
+  const r = upgradeData({ brews: [y1, y2], beans: [], drippers: [live] }, { drippersSeeded: true });
+  const [z1, z2] = r.data.brews;
+  assert.equal(z1.conditions.dripperId, 'dL');
+  assert.equal(r.steps['brew.dripperRelink'], 1);
+  assert.equal(z2.conditions.dripperId, 'gone2'); // 이을 곳이 없으면 그대로(드리퍼를 새로 만들지 않는다)
+  assert.equal(r.data.drippers.length, 1);
+  assert.ok(JSON.stringify(conditionRows(z2)).includes('없어진 드리퍼')); // 기록 표는 기록 안의 이름으로 보인다
+  const pkg = buildSharePackage({ brews: [z2], drippers: [live], current: z2, scope: 'single' });
+  assert.deepEqual(pkg.drippers, {});
+  assert.doesNotThrow(() => toMarkdown(pkg));
+  assert.deepEqual(syncRefs(structuredClone(z2), { drippers: new Map([['dL', live]]) }), []);
+});
+
+test('측정 사진 판정: µm 단위와 평균·클릭 값이 있어야 통과, 아니면 까닭을 든다', () => {
+  const good = photoCheck({ cards: 3, headerText: 'KINGrinder K6 Click 120', statsText: '평균 크기 1347.69 µm ± 141.31 µm 표준편차 352.18 µm', measurement: { meanUm: 1347.69, click: 120 } });
+  assert.deepEqual([good.ok, good.reasons], [true, []]);
+  const bad = photoCheck({ cards: 0, headerText: '', statsText: '', measurement: { meanUm: null, click: null } });
+  assert.equal(bad.ok, false);
+  assert.deepEqual(bad.reasons, ['결과 카드(글 상자)를 찾지 못했습니다', 'µm 단위를 찾지 못했습니다', '「평균」·「편차」·「Click」 같은 글자를 찾지 못했습니다', '평균 크기·클릭 값을 읽지 못했습니다']);
+  assert.equal(photoCheck({ cards: 2, headerText: '', statsText: '평균 1300', measurement: { meanUm: 1300, click: null } }).ok, false); // 단위가 없으면 걸린다
+});
+
+test('필터 기본 목록·붓는 방법 설명: 모두 출처 주소가 있고, 붓는 방법 세 가지에 설명이 있으며, 공유 글에 필터 특징이 실린다', () => {
+  assert.equal(new Set(FILTER_CATALOG.map((f) => f.name)).size, FILTER_CATALOG.length);
+  for (const f of FILTER_CATALOG) assert.ok(f.feature && f.sources.every((x) => /^https:\/\//.test(x.url)), f.key);
+  assert.equal(filterLine(findFilter('CAFEC T-92(약배전용)')), '원뿔 · Cup1·Cup4 · 종이 안에 물이 고여 향을 끌어낸다(제조사 설명) · 약배전에 권장 92℃');
+  for (const m of POUR_METHODS) assert.ok(POUR_GUIDE[m]?.how && POUR_GUIDE[m].effect && POUR_GUIDE[m].sources.length, m);
+  const b = makeBrew({ id: 'fl1', at: 1_000, presses: [40, 70, 130] });
+  b.conditions.filter = 'CHEMEX Bonded 필터';
+  assert.match(toMarkdown(buildSharePackage({ brews: [b], current: b, scope: 'single' })), /- 필터 특징\(제조사 자료\): CHEMEX\(원뿔로 접음\)/);
+});
+
+test('원두 AI 프롬프트: 생산자 칸에 브랜드(만델링)·등급(G1 등)도 적게 한다', () => {
+  const p = beanPrompt();
+  assert.match(p, /producer: .*브랜드\(상품\) 이름\(예: 만델링\)과 등급\(예: G1·G2·G4 등\)/);
+  assert.equal(validateBeanImport(BEAN_EXAMPLE).value.producer, '첼바 G1');
+});
+
+test('AI 공유 비교 기록 고르기(9/26): 고른 역할만 담고, 고르지 않은 역할은 「담지 않음」, 같은 기록은 한 번만, 단일 기록만이면 모두 담지 않음', () => {
+  const other = makeBrew({ id: 'o1', at: 1_000, presses: [40, 70, 130], bean: { id: 'b2', name: '원두B' } }); // 같은 레시피·다른 원두
+  const sameBeanOld = makeBrew({ id: 'o2', at: 2_000, presses: [40, 70, 130] }); // 같은 레시피·같은 원두(원두A)
+  const prev = makeBrew({ id: 'o3', at: 3_000, presses: [40, 70, 130], bean: { id: 'b3', name: '원두C' } }); // 직전
+  const cur = makeBrew({ id: 'c1', at: 4_000, presses: [40, 70, 130] });
+  const brews = [other, sameBeanOld, prev, cur];
+  const all = buildSharePackage({ brews, current: cur, compare: ['sameRecipeAndBean', 'previous', 'sameBean', 'sameRecipe', 'bogus'] });
+  assert.deepEqual(all.relations.compare, ['previous', 'sameBean', 'sameRecipe', 'sameRecipeAndBean']); // 순서 고정·모르는 값 뺌
+  assert.deepEqual([all.relations.previous, all.relations.sameBean, all.relations.sameRecipe, all.relations.sameRecipeAndBean], ['o3', 'o2', 'o3', 'o2']);
+  assert.deepEqual(all.brews.map((b) => [b.id, b.roles.join('+')]), [['c1', 'current'], ['o3', 'previous+sameRecipe'], ['o2', 'sameBean+sameRecipeAndBean']]);
+  const md = toMarkdown(all);
+  assert.match(md, /\| 레시피가 같은 가장 최근 추출\(원두 무관\) \| 「직전 추출\(레시피·원두 무관\)」과 같은 기록 \|/);
+  const one = buildSharePackage({ brews, current: cur, compare: ['sameBean'] });
+  assert.deepEqual(one.brews.map((b) => b.id), ['c1', 'o2']);
+  assert.match(toMarkdown(one), /\| 직전 추출\(레시피·원두 무관\) \| 담지 않음\(고르지 않음\) \|/);
+  const none = buildSharePackage({ brews, current: cur, compare: [] });
+  assert.deepEqual(none.brews.map((b) => b.id), ['c1']);
+  const single = buildSharePackage({ brews, current: cur, scope: 'single', compare: ['previous'] });
+  assert.deepEqual([single.brews.length, single.relations.compare], [1, []]);
+  assert.match(toMarkdown(single), /담지 않음\(단일 기록만 공유\)/);
+  assert.deepEqual(buildSharePackage({ brews, current: cur }).relations.compare, ['previous', 'sameRecipeAndBean']); // 기본 = 전과 같은 둘
+});
+
+// ── 9/26 원두 봉투(B안) ──
+import { validateBeanList, bagsText } from '../app/js/core/beanImport.js';
+import { daysLine, bagSummary } from '../app/js/core/facts.js';
+
+test('봉투 상태 바꾸기: 개봉·냉동실에 넣고 꺼내기·다시 얼리기·모두 소비됨·되돌리기에 날짜가 따라간다', () => {
+  const g = createBag({ id: 'g', beanId: 'b', state: 'stored' });
+  setBagState(g, 'inUse', '2026-09-01');
+  assert.deepEqual([g.state, g.openedOn, g.freezes], ['inUse', '2026-09-01', []]);
+  setBagState(g, 'inUseFrozen', '2026-09-03'); // 뜯은 봉투를 냉동실에
+  assert.deepEqual(g.freezes, [{ on: '2026-09-03', off: null }]);
+  setBagState(g, 'inUse', '2026-09-10'); // 꺼냄
+  assert.deepEqual(g.freezes, [{ on: '2026-09-03', off: '2026-09-10' }]);
+  setBagState(g, 'frozen', '2026-09-12'); // 다시 얼림 → 한 줄 더
+  assert.equal(g.freezes.length, 2);
+  setBagState(g, 'consumed', '2026-09-20', '2026-09-20T10:00:00.000Z');
+  assert.deepEqual([g.state, g.stateBefore, g.consumedAt], ['consumed', 'frozen', '2026-09-20T10:00:00.000Z']);
+  setBagState(g, 'inUse', '2026-09-21'); // 되돌림: 냉동실에서 나온 것으로
+  assert.deepEqual([g.state, g.consumedAt, g.freezes[1].off], ['inUse', null, '2026-09-21']);
+  const s = createBag({ state: 'stored' });
+  setBagState(s, 'frozen', '2026-09-05'); // 밀봉 그대로 냉동 — 개봉일은 비어 있다
+  assert.deepEqual([s.openedOn, s.freezes], [null, [{ on: '2026-09-05', off: null }]]);
+});
+
+test('봉투 일수: 로스팅 후 = 실온 + 냉동(환산 없이 나눠 적음), 개봉 후, 모두 소비됨이면 그때에서 멈춤', () => {
+  const g = createBag({ roastedOn: '2026-08-01', freezes: [{ on: '2026-08-10', off: '2026-09-09' }], openedOn: '2026-09-10', state: 'inUse' });
+  const at = new Date(2026, 8, 20, 9).getTime();
+  assert.deepEqual(bagDays(g, at), { roast: 50, frozen: 30, room: 20, open: 10, estimated: false });
+  assert.equal(daysLine(bagDays(g, at)), '로스팅 후 50일(실온 20일 · 냉동 30일) · 개봉 후 10일');
+  const still = createBag({ roastedOn: '2026-09-01', freezes: [{ on: '2026-09-05', off: null }], state: 'frozen' });
+  assert.deepEqual([bagDays(still, at).frozen, bagDays(still, at).room], [15, 4]); // 아직 냉동실이면 오늘까지 냉동
+  const done = createBag({ roastedOn: '2026-09-01', state: 'consumed', consumedAt: new Date(2026, 8, 11, 9).toISOString() });
+  assert.equal(bagDays(done, at).roast, 10);
+  assert.equal(daysLine(bagDays(createBag({ roastedOn: '2026-09-15', roastedOnFrom: { bestBefore: '2027-09-15', months: 12 } }), at)), '로스팅 후 약 5일(추정)');
+});
+
+test('봉투 고르기·원두 요약: 사용 중 → 사용 중(냉동) → 보관 중(실온) → 보관 중(냉동), 모두 소비됨이면 소비된 원두', () => {
+  const bags = [
+    createBag({ id: 'f', beanId: 'b', state: 'frozen', roastedOn: '2026-09-01' }),
+    createBag({ id: 's2', beanId: 'b', state: 'stored', roastedOn: '2026-09-10' }),
+    createBag({ id: 's1', beanId: 'b', state: 'stored', roastedOn: '2026-09-05' }),
+    createBag({ id: 'x', beanId: 'b', state: 'consumed' }),
+  ];
+  assert.equal(activeBag('b', bags).id, 's1'); // 보관 중(실온) 중 먼저 볶은 것
+  assert.equal(activeBag('b', [...bags, createBag({ id: 'u', beanId: 'b', state: 'inUse' })]).id, 'u');
+  const st = beanStock(createBean({ id: 'b' }), [], [], bags);
+  assert.equal(bagSummary(st), '봉투 4 · 보관 중(실온) 2 · 보관 중(냉동) 1 · 모두 소비됨 1');
+  assert.equal(beanStock(createBean({ id: 'b' }), [], [], [bags[3]]).consumed, true);
+  assert.equal(beanStock(createBean({ id: 'n' }), [], [], bags).consumed, false); // 봉투가 없는 원두는 보유 중으로 본다
+});
+
+test('옛 원두 → 봉투(B안): 구매 무게·제조일·개봉일·상태를 봉투로 옮기고, 기록은 그 봉투와 그때 일수를 가리키며, 두 번 돌려도 그대로', () => {
+  const old = { id: 'b1', name: '옛 원두', nameAuto: false, purchased: { amount: 200, unit: 'g' }, roastedOn: '2026-09-01', openedOn: '2026-09-05', status: 'active' };
+  const gone = { id: 'b2', name: '다 쓴 원두', nameAuto: false, purchased: { amount: 100, unit: 'g' }, status: 'consumed', consumedAt: '2026-09-10T00:00:00.000Z' };
+  const mix = { id: 'b3', name: '섞음', nameAuto: false, blend: { by: 'me', parts: [{ beanId: 'b1', name: '옛 원두', g: 30 }] }, status: 'active' };
+  const x = makeBrew({ id: 'k1', at: new Date(2026, 8, 8, 9).getTime(), presses: [40, 70, 130] });
+  const r1 = upgradeData({ brews: [x], beans: [old, gone, mix], drippers: [] }, { drippersSeeded: true });
+  const bags = r1.data.bags;
+  assert.equal(bags.length, 3);
+  const g1 = bags.find((g) => g.beanId === 'b1');
+  assert.deepEqual([g1.state, g1.purchased.amount, g1.roastedOn, g1.openedOn], ['inUse', 200, '2026-09-01', '2026-09-05']);
+  assert.deepEqual([bags.find((g) => g.beanId === 'b2').state, bags.find((g) => g.beanId === 'b2').stateBefore], ['consumed', 'inUse']);
+  assert.equal(bags.find((g) => g.beanId === 'b3').purchased.amount, 30); // 섞은 블렌드 = 섞은 무게 합
+  const b1 = r1.data.beans.find((b) => b.id === 'b1');
+  assert.ok(!('purchased' in b1) && !('status' in b1) && !('roastedOn' in b1));
+  assert.equal(r1.data.beans.find((b) => b.id === 'b3').blend.parts[0].bagId, g1.id);
+  const k1 = r1.data.brews[0];
+  assert.equal(k1.bean.bagId, g1.id);
+  assert.deepEqual([k1.bean.age.roast, k1.bean.age.open], [7, 3]); // 그 추출 때(9/8) 기준
+  assert.match(Object.fromEntries(conditionRows(k1))['원두 상태'], /^로스팅 후 7일 · 개봉 후 3일$/);
+  const r2 = upgradeData(r1.data, { drippersSeeded: true });
+  assert.deepEqual([r2.steps, r2.data.bags.length], [{}, 3]);
+});
+
+test('여러 원두 AI 가져오기: beans 목록·봉투(무게·개수·제조일), 갈 때 냉동 상태가 기록 표에 남는다', () => {
+  const p = beanPrompt();
+  assert.ok(p.includes('"beans"') && p.includes('bags'));
+  const { items, warnings } = validateBeanList({ format: 'nextbrew-bean', version: 1, beans: [
+    { roaster: '콩볶는사람들', country: '인도네시아', region: '만델링', producer: '만델링 G1', bags: [{ amount: 200, unit: 'g', count: 2, roastedOn: '2026-09-20' }] },
+    { roaster: '콩볶는사람들', country: '콜롬비아', bags: [{ amount: '1kg', unit: 'KG' }] },
+  ] });
+  assert.deepEqual(warnings, []);
+  assert.equal(items.length, 2);
+  assert.deepEqual(items[0].value.bags, [{ amount: 200, unit: 'g', count: 2, roastedOn: '2026-09-20' }]);
+  assert.equal(bagsText(items[0].value.bags), '200g × 2 · 제조 2026-09-20');
+  assert.equal(items[1].value.bags[0].unit, 'kg');
+  assert.equal(validateBeanList(BEAN_EXAMPLE).items.length, 1); // 한 원두 형식도 그대로
+  const b = makeBrew({ id: 'fz', at: 1_000, presses: [40, 70, 130] });
+  b.bean = { ...b.bean, bagId: 'g', age: { roast: 40, room: 10, frozen: 30, open: 5, estimated: false } };
+  b.conditions.grindBeanState = 'frozen';
+  assert.equal(Object.fromEntries(conditionRows(b))['원두 상태'], '로스팅 후 40일(실온 10일 · 냉동 30일) · 개봉 후 5일 · 냉동 상태로 갊');
+});
+
+// ── 비활성화·기록 지우기·서버 지우기·레시피 순서(9/27 사용자 결정) ─────────────
+import { INACTIVE_REASONS, isActive, inactiveMark, inactiveLine, activeChoices, detachServer } from '../app/js/core/schema.js';
+import { orderRecipes } from '../app/js/core/recipeBook.js';
+
+test('비활성화: 사유는 정한 키만 받고, 활성 목록은 골라 둔 것만 비활성이어도 남긴다', () => {
+  const m = inactiveMark({ reason: 'test', note: '  물이 쏠림 ' }, Date.parse('2026-09-27T01:00:00Z'));
+  assert.deepEqual(m, { at: '2026-09-27T01:00:00.000Z', reason: 'test', note: '물이 쏠림' });
+  assert.equal(inactiveMark({ reason: '없는키' }).reason, null);
+  assert.equal(inactiveLine({ inactive: m }), `${INACTIVE_REASONS.test} · 물이 쏠림`);
+  assert.equal(inactiveLine({ inactive: null }), '');
+  assert.equal(isActive({ inactive: null }) && isActive({}) && !isActive({ inactive: m }), true);
+  const list = [{ id: 'a' }, { id: 'b', inactive: m }, { id: 'c', inactive: m }];
+  assert.deepEqual(activeChoices(list).map((x) => x.id), ['a']);
+  assert.deepEqual(activeChoices(list, 'c').map((x) => x.id), ['a', 'c']);
+});
+
+test('비활성 기록은 비교·제안·클릭당 µm 추정에서 빠지고, 원두 남은 양에는 그대로 센다', () => {
+  const off = inactiveMark({ reason: 'failed' });
+  const a = makeBrew({ id: 'a', at: 1_000, presses: [35, 70, 113] });
+  const b = makeBrew({ id: 'b', at: 5_000_000, presses: [35, 70, 113] });
+  const c = makeBrew({ id: 'c', at: 9_000_000, presses: [35, 70, 113] });
+  b.inactive = off;
+  // 지난 추출과 비교 · AI 공유 비교 기록: 비활성 b 를 건너뛰고 a
+  assert.equal(findPrevious([a, b, c], c).partner.id, 'a');
+  const rel = findShareRelations([c, b, a], c);
+  assert.deepEqual([rel.previous?.id, rel.sameRecipe?.id, rel.sameRecipeAndBean?.id], ['a', 'a', 'a']);
+  // 지난번 제안(설문한 기록) · AI 제안 카드
+  a.survey = survey();
+  b.survey = survey();
+  assert.equal(lastSurveyed([c, b, a], { recipeId: KURASU.id }).id, 'a');
+  a.aiAdvice = { next: {} };
+  b.aiAdvice = { next: {} };
+  assert.equal(lastAdvised([c, b, a], { recipeId: KURASU.id }).id, 'a');
+  // 노트 체감 미리 채우기
+  a.survey.notePerception = { 자두: '느껴짐' };
+  b.survey.notePerception = { 자두: '안 느껴짐' };
+  assert.equal(lastNotePerceptions([a, b, c], c, ['자두']).자두.value, '느껴짐');
+  // 클릭당 µm: 잘못 적은 µm(비활성)는 추정에 쓰지 않는다
+  const g = (dial, um, inactive = null) => ({ inactive, conditions: { grind: { grinderId: 'k6', dial, zeroOffset: 0, um } } });
+  assert.deepEqual(estimateUmPerClick([g(60, 600), g(70, 700), g(80, 5000, off)], 'k6'), { value: 10, n: 2 });
+  // 남은 양: 비활성 기록도 쓴 원두로 센다
+  const bag = createBag({ id: 'g1', beanId: 'b1', purchased: { amount: 100, unit: 'g' }, state: 'inUse' });
+  const used = [a, b].map((x) => ({ ...x, bean: { ...x.bean, bagId: 'g1' } }));
+  assert.equal(bagStock(bag, used).remainingG, 100 - used[0].conditions.doseG * 2);
+});
+
+test('비활성 기록을 AI 공유에 직접 담으면 MD 에 사유를 적는다', () => {
+  const a = makeBrew({ id: 'a', at: 1_000, presses: [35, 70, 113] });
+  a.inactive = inactiveMark({ reason: 'test', note: '새 필터 시험' });
+  const md = toMarkdown(buildSharePackage({ brews: [a], current: a, scope: 'single' }));
+  assert.match(md, /- 비활성 기록\(사용자가 비교·제안에서 뺀 기록\): 시험 추출 · 새 필터 시험/);
+});
+
+test('새 저장소의 앱 기본 드리퍼는 비활성으로 만든다 — 기록에 적힌 이름이면 활성, 이미 만든 저장소는 그대로, 합칠 때는 활성이 이긴다', () => {
+  const fresh = upgradeData({ brews: [], beans: [], drippers: [] }, {});
+  assert.equal(fresh.data.drippers.length, DRIPPER_SEEDS.length);
+  assert.ok(fresh.data.drippers.every((d) => !isActive(d)), '등록하지 않은 기본 드리퍼는 추출 준비에 뜨지 않는다');
+  const used = makeBrew({ id: 'u', at: 1_000, presses: [35, 70, 113], dripper: DRIPPER_SEEDS[0].name });
+  const withRecord = upgradeData({ brews: [used], beans: [], drippers: [] }, {});
+  const byName = Object.fromEntries(withRecord.data.drippers.map((d) => [d.name, isActive(d)]));
+  assert.equal(byName[DRIPPER_SEEDS[0].name], true, '기록에 쓴 기본 드리퍼는 활성');
+  assert.equal(byName[DRIPPER_SEEDS[1].name], false);
+  // 이미 만든 저장소(drippersSeeded)는 활성 그대로
+  const old = { id: 'd1', name: DRIPPER_SEEDS[0].name, catalogKey: DRIPPER_SEEDS[0].key, size: DRIPPER_SEEDS[0].size };
+  assert.equal(upgradeData({ brews: [], beans: [], drippers: [old] }, { drippersSeeded: true }).data.drippers[0].inactive ?? null, null);
+  // 기기(비활성 기본) + 계정(쓰던 것) 두 벌을 합치면 활성으로 남는다
+  const off = { ...old, id: 'd2', inactive: inactiveMark({}), updatedAt: '2026-01-01' };
+  const on = { ...old, id: 'd3', inactive: null, updatedAt: '2026-02-01' };
+  const merged = upgradeData({ brews: [], beans: [], drippers: [off, on] }, { drippersSeeded: true });
+  assert.equal(merged.data.drippers.length, 1);
+  assert.equal(isActive(merged.data.drippers[0]), true);
+});
+
+test('서버 지우기: 쓴 기록은 서버 ID 만 떼고 이름·자체 무게를 고정 — 등록 서버를 따라가지 않는다(원본 기록은 그대로)', () => {
+  const a = makeBrew({ id: 'a', at: 1_000, presses: [35, 70, 113] });
+  const b = makeBrew({ id: 'b', at: 2_000, presses: [35, 70, 113] });
+  a.result.server = { id: 's1', name: '하리오 600', tareG: 212 };
+  b.result.server = { id: 's2', name: '다른 서버', tareG: 150 };
+  const fixed = detachServer([a, b], 's1');
+  assert.deepEqual(fixed.map((x) => x.id), ['a']);
+  assert.deepEqual(fixed[0].result.server, { id: null, name: '하리오 600', tareG: 212, fromServerId: 's1' });
+  assert.equal(a.result.server.id, 's1', '원본은 건드리지 않는다');
+  const probe = structuredClone(fixed[0]);
+  assert.deepEqual(syncRefs(probe, { servers: new Map([['s1', { id: 's1', name: '새 이름', tareG: 300 }]]) }), []);
+  assert.equal(detachServer([a, b], null).length, 0);
+});
+
+test('레시피 순서: 적은 ID 가 먼저, 적지 않은 것은 뒤에 원래 순서대로, 지운 ID 는 건너뜀', () => {
+  const list = [{ id: 'p1' }, { id: 'p2' }, { id: 'p3' }, { id: 'u1' }];
+  assert.deepEqual(orderRecipes(list, ['u1', 'gone', 'p2']).map((r) => r.id), ['u1', 'p2', 'p1', 'p3']);
+  assert.deepEqual(orderRecipes(list, []).map((r) => r.id), ['p1', 'p2', 'p3', 'u1']);
+  assert.deepEqual(orderRecipes(list, undefined).map((r) => r.id), ['p1', 'p2', 'p3', 'u1']);
 });

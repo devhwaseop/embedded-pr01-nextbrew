@@ -1,7 +1,7 @@
 // 기록 한 건을 사람이 읽는 [항목, 값, 부가 설명] 줄로 바꾼다(부가 설명은 없을 수 있다).
 // 화면(조건 목록·단계표)과 AI 공유 파일(MD)이 같은 표기를 쓰게 한 곳에 둔다.
 
-import { n2, formatGrind, grindActual, netServerWeight, timingVerdict, timerOf, beanStock, daysSince, dilutionView, SURVEY_ITEMS, INTENSITY_WORDS, LIKING_WORDS } from './schema.js';
+import { n2, formatGrind, grindActual, netServerWeight, timingVerdict, timerOf, bagStock, bagDays, BAG_STATES, dilutionView, SURVEY_ITEMS, INTENSITY_WORDS, LIKING_WORDS } from './schema.js';
 import { formatRatio } from './recipe.js';
 import { WORDS, endStateLabel } from './words.js';
 import { measurementOf, PHOTO_SOURCE } from './grindMeasure.js';
@@ -31,6 +31,7 @@ export function conditionRows(b) {
     : '—';
   return [
     ['원두', brewBeanLabel(b) ?? '—'], // 블렌드 템플릿으로 섞었으면 원두별 무게를 붙인다(9/26)
+    ...(beanStateLine(b) ? [['원두 상태', beanStateLine(b), '그 추출 때 봉투의 일수 · 갈 때 상태']] : []), // 9/26 원두 봉투
     ['원두량', `${n2(c.doseG)}g`],
     ['뜨거운 물', r.actualWaterG != null ? `${n2(r.actualWaterG)}g (계획 ${n2(c.hotWaterG)}g)` : `${n2(c.hotWaterG)}g`],
     ['얼음', c.style === 'hot' ? '핫' : `${n2(c.iceG)}g${c.iceTargetG != null && c.iceTargetG !== c.iceG ? ` (추천 ${n2(c.iceTargetG)}g)` : ''}`],
@@ -91,15 +92,38 @@ export function surveyRows(s) {
   return rows;
 }
 
-// 원두 한 줄 요약(9/25): 「로스팅 후 12일 · 개봉 후 3일 · 남은 약 150g(추정)」. 값이 없는 칸은 뺀다.
-// 소비기한에서 거꾸로 센 제조일이면 「약 …(추정)」으로 적는다.
-export function beanFacts(b, brews, now = Date.now(), beans = []) {
+// 봉투 일수 한 줄(9/26 사용자 결정 — 로스팅 후 일수를 실온·냉동으로 나눠 적는다, 환산 비율 없음):
+// 「로스팅 후 40일(실온 10일 · 냉동 30일) · 개봉 후 5일」. 냉동한 적이 없으면 괄호를 뺀다. 제조일을 소비기한에서 셌으면 「약 …(추정)」
+export function daysLine(d) {
+  if (!d) return '';
   const out = [];
-  const roasted = daysSince(b.roastedOn, now);
-  if (roasted != null) out.push(b.roastedOnFrom ? `로스팅 후 약 ${roasted}일(추정)` : `로스팅 후 ${roasted}일`);
-  const opened = daysSince(b.openedOn, now);
-  if (opened != null) out.push(`개봉 후 ${opened}일`);
-  const st = beanStock(b, brews, beans);
+  if (d.roast != null) out.push(`로스팅 후 ${d.estimated ? '약 ' : ''}${d.roast}일${d.frozen ? `(실온 ${d.room}일 · 냉동 ${d.frozen}일)` : ''}${d.estimated ? '(추정)' : ''}`);
+  else if (d.frozen) out.push(`냉동 ${d.frozen}일`);
+  if (d.open != null) out.push(`개봉 후 ${d.open}일`);
+  return out.join(' · ');
+}
+
+// 봉투 한 줄 요약: 일수 + 남은 양(추정). 값이 없는 칸은 뺀다.
+export function bagFacts(bag, brews, beans = [], now = Date.now()) {
+  const out = [];
+  const days = daysLine(bagDays(bag, now));
+  if (days) out.push(days);
+  const st = bagStock(bag, brews, beans);
   if (st.remainingG != null) out.push(`남은 약 ${n2(Math.max(0, st.remainingG))}g(추정)`);
   return out;
+}
+
+// 원두 봉투 요약(목록 한 줄): 「봉투 3 · 사용 중 1 · 보관 중(냉동) 2 · 남은 약 520g(추정)」
+export function bagSummary(st) {
+  if (!st.bags.length) return '봉투 없음';
+  const parts = Object.keys(BAG_STATES).filter((k) => st.counts[k]).map((k) => `${BAG_STATES[k]} ${st.counts[k]}`);
+  return [`봉투 ${st.bags.length}`, ...parts, st.remainingG != null ? `남은 약 ${n2(st.remainingG)}g(추정)` : null].filter(Boolean).join(' · ');
+}
+
+// 기록의 원두 상태(그때 값): 봉투 일수 + 갈 때 원두 상태(9/26 — 사용자가 고름, 냉동실 봉투면 처음 값 «냉동 상태로»)
+export const GRIND_STATE_WORDS = { frozen: '냉동 상태로 갊', room: '실온에서 갊' };
+export function beanStateLine(b) {
+  const age = daysLine(b.bean?.age);
+  const g = GRIND_STATE_WORDS[b.conditions?.grindBeanState] ?? null;
+  return [age || null, g].filter(Boolean).join(' · ');
 }

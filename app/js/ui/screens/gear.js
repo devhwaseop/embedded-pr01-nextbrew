@@ -2,17 +2,34 @@
 // 기록은 이 항목들을 ID 로 가리킨다 — 이름·서버 자체 무게를 고치면 옛 기록도 따라가고, 그라인더 영점은 그때 값 그대로다(core/migrate.js).
 // 그라인더 칸에서 분쇄 측정을 올리면 어떤 원두의 측정인지 팝업에서 고른다(ui/measureImport.js).
 
-import { h, fill, section, field, stepper, toast, term, chips, pickOne, copyText } from '../dom.js';
+import { h, fill, section, inactiveSection, field, stepper, toast, term, chips, pickOne, copyText, modal, fmtDateTime } from '../dom.js';
+import { sameNameGroups, dripperConflicts } from '../../core/migrate.js';
 import { DRIPPER_CATALOG, DRIPPER_SHAPES, DRIPPER_METHODS, SOURCE_KINDS, findCatalog, catalogFields, catalogName } from '../../data/drippers.js';
 import { dripperPrompt, readDripperText, validateDripperImport, dripperPatch, applyDripperPatch, DRIPPER_FIELDS } from '../../core/dripperImport.js';
 import { loadDraft, saveDraft } from './brew.js';
 import { store } from '../../core/store.js';
-import { n2, createGrinder, createServer, createDripper } from '../../core/schema.js';
+import { n2, createGrinder, createServer, createDripper, isActive, inactiveMark, detachServer } from '../../core/schema.js';
 import { measureImportButton, measureListItem } from '../measureImport.js';
 import { WORDS } from '../../core/words.js';
 import { logEvent } from '../../core/log.js';
 import { estimateUmPerClick } from '../../core/compass.js';
 import { beansSegment } from './beans.js';
+
+const rerender = () => window.dispatchEvent(new HashChangeEvent('hashchange'));
+
+// 비활성화·다시 활성화(9/27 사용자 결정): 저장된 문서의 inactive 만 바꾼다. 지우지 않으므로 기록·영점·측정은 그대로다.
+// → 바뀐 문서(저장되지 않은 것이면 null)
+export function toggleInactive(col, doc, via) {
+  const cur = doc?.id ? store.get(col, doc.id) : null;
+  if (!cur) return null;
+  const on = isActive(cur);
+  const next = store.put(col, { ...cur, inactive: on ? inactiveMark({}) : null });
+  logEvent('gear.inactive', { col, id: cur.id, name: cur.name ?? null, on, via });
+  toast(on ? '비활성화했습니다.' : '다시 활성화했습니다.');
+  return next;
+}
+const toggleButton = (col, doc) =>
+  h('button', { type: 'button', class: 'quiet', onClick: () => toggleInactive(col, doc, 'list') && rerender() }, isActive(doc) ? `비활성화(${col === 'servers' ? '결과 화면' : '추출 준비'}에서 빼기)` : '다시 활성화');
 
 // 클릭당 µm 를 비워 두면 쓸 값: 이 그라인더 기록들의 (영점 반영값, 참고 µm)로 구한 기울기
 function umHint(g) {
@@ -37,13 +54,14 @@ function grinderRow(g) {
         type: 'button',
         onClick: () => {
           if (!draft.name.trim()) return toast('이름을 넣어 주세요.');
-          const saved = store.put('grinders', { ...g, name: draft.name.trim(), zeroOffset: draft.zeroOffset, umPerClick: draft.umPerClick ?? null });
+          const saved = store.put('grinders', { ...g, inactive: store.get('grinders', g.id)?.inactive ?? g.inactive ?? null, name: draft.name.trim(), zeroOffset: draft.zeroOffset, umPerClick: draft.umPerClick ?? null });
           logEvent('grinder.save', { grinderId: saved.id, name: saved.name, zeroOffset: saved.zeroOffset, umPerClick: saved.umPerClick });
           toast('저장했습니다.');
         },
       },
       '저장',
     ),
+    g.id && store.get('grinders', g.id) ? h('div', { class: 'row wrap' }, toggleButton('grinders', g)) : null,
   );
 }
 
@@ -75,14 +93,38 @@ function serverRow(sv) {
         onClick: () => {
           if (!draft.name.trim()) return toast('이름을 넣어 주세요.');
           if (draft.tareG == null) return toast('서버 무게를 넣어 주세요.');
-          const saved = store.put('servers', { ...sv, name: draft.name.trim(), tareG: draft.tareG });
+          const saved = store.put('servers', { ...sv, inactive: store.get('servers', sv.id)?.inactive ?? sv.inactive ?? null, name: draft.name.trim(), tareG: draft.tareG });
           logEvent('server.save', { serverId: saved.id, name: saved.name, tareG: saved.tareG });
           toast('저장했습니다.');
         },
       },
       '저장',
     ),
+    sv.id && store.get('servers', sv.id) ? h('div', { class: 'row wrap' }, toggleButton('servers', sv), h('button', { type: 'button', class: 'quiet', onClick: () => removeServer(sv) }, '지우기')) : null,
   );
+}
+
+// 서버 지우기(9/27 사용자 결정): 그 서버를 쓴 기록은 이름·자체 무게를 기록에 고정한다(core/schema.js detachServer) —
+// 「등록 없이 무게만 적기」와 같아져 기록의 [결과 수정]에서 고칠 수 있다. 무게만 가진 항목이라 기록을 함께 지우지 않는다.
+async function removeServer(sv) {
+  const cur = store.get('servers', sv.id) ?? sv;
+  const fixed = detachServer(store.brews(), cur.id);
+  const k = await modal({
+    title: `「${cur.name}」을 지울까요?`,
+    body: fixed.length
+      ? `이 서버를 쓴 기록 ${fixed.length}건은 서버 이름과 자체 무게(${n2(cur.tareG ?? 0)}g)를 기록에 그대로 둡니다. 지운 뒤에는 서버를 고쳐도 따라가지 않고, 기록의 [결과 수정]에서 무게를 고칠 수 있습니다.`
+      : '이 서버를 쓴 기록은 없습니다. 서버만 지웁니다.',
+    actions: [{ key: 'no', label: '닫기' }, { key: 'yes', label: '지우기', primary: true }],
+  });
+  if (k !== 'yes') {
+    logEvent('server.deleteCancel', { serverId: cur.id, brews: fixed.length });
+    return;
+  }
+  for (const b of fixed) store.put('brews', b);
+  store.remove('servers', cur.id);
+  logEvent('server.delete', { serverId: cur.id, name: cur.name, tareG: cur.tareG, brews: fixed.map((b) => b.id) });
+  toast(fixed.length ? `서버를 지우고 기록 ${fixed.length}건에 무게를 고정했습니다.` : '서버를 지웠습니다.');
+  rerender();
 }
 
 
@@ -93,7 +135,9 @@ function backToPrep() {
 }
 
 export function grindersScreen() {
-  const grinderList = h('div', null, ...store.list('grinders').map(grinderRow));
+  const all = store.list('grinders');
+  const grinderList = h('div', null, ...all.filter(isActive).map(grinderRow));
+  const off = all.filter((g) => !isActive(g));
   return h(
     'div',
     { class: 'screen' },
@@ -105,6 +149,7 @@ export function grindersScreen() {
       h('div', { class: 'hint' }, '영점은 언제든 바꿀 수 있습니다. 이미 저장된 기록은 그때의 영점을 그대로 가집니다. 이름을 고치면 옛 기록도 따라 바뀝니다.'),
       grinderList,
       h('button', { onClick: () => grinderList.append(grinderRow(createGrinder())) }, '＋ 그라인더 추가'),
+      h('div', { class: 'hint' }, '안 쓰는 그라인더는 [비활성화]로 추출 준비 목록에서 뺍니다. 그 그라인더로 내린 기록·영점·측정은 그대로 남습니다(같은 모델이라도 분쇄가 달라 지우지 않습니다).'),
       // 보조 자료(사용자 결정 9/24): 데이터를 앱에 옮기지 않고 링크만 둔다 — 이용 허락 표시가 없고 두 곳 모두 크라우드소싱 추정치라서
       h(
         'div',
@@ -124,11 +169,14 @@ export function grindersScreen() {
       ),
     ),
     // 레시피 추가·관리는 원두 탭의 [원두 | 레시피] 전환으로 옮겼다(사용자 결정 9/25 — 설정에 있으면 애매하다)
+    off.length ? inactiveSection(`비활성 그라인더 (${off.length})`, ...off.map(grinderRow)) : null,
   );
 }
 
 export function serversScreen() {
-  const serverList = h('div', null, ...store.list('servers').map(serverRow));
+  const all = store.list('servers');
+  const serverList = h('div', null, ...all.filter(isActive).map(serverRow));
+  const off = all.filter((x) => !isActive(x));
   return h(
     'div',
     { class: 'screen' },
@@ -139,13 +187,17 @@ export function serversScreen() {
       h('div', { class: 'hint' }, `결과 화면에서 서버 총 무게를 재면 여기 무게를 빼서 ${WORDS.netWeight.label}를 계산합니다. 이름·무게를 고치면 그 서버를 쓴 옛 기록도 따라 바뀝니다.`),
       serverList,
       h('button', { onClick: () => serverList.append(serverRow(createServer())) }, '＋ 서버 추가'),
+      h('div', { class: 'hint' }, '[비활성화]는 결과 화면의 서버 목록에서만 뺍니다. [지우기]는 서버를 없애고, 그 서버를 쓴 기록에는 이름과 무게를 고정해 둡니다.'),
     ),
+    off.length ? inactiveSection(`비활성 서버 (${off.length})`, ...off.map(serverRow)) : null,
   );
 }
 
 // ── 드리퍼(9/26) ──────────────────────────────────────────────
 // 기본 목록(data/drippers.js) · AI 답 · 직접 입력 모두 같은 칸을 쓴다(사용자 결정 — 형식 통일, AI 가 드리퍼 특징을 모를 수 있어서).
-// 기록은 ID 로 가리킨다 — 이름 오타(v60 → a60)를 고치면 옛 기록도 따라 바뀐다. 기본 목록은 등록하지 않아도 추출 준비에서 바로 고른다.
+// 기록은 ID 로 가리킨다 — 이름 오타(v60 → a60)를 고치면 옛 기록도 따라 바뀐다.
+// 9/27 사용자 결정: 추출 준비에는 «내 드리퍼» 중 활성인 것만 뜬다. 기본 목록은 [＋ 드리퍼 등록] → [기본 목록에서 고르기]로 등록해야 뜨고,
+// 비활성 드리퍼는 [다시 활성화]하면 뜬다(새 저장소의 앱 기본 드리퍼는 비활성으로 시작한다 — core/migrate.js).
 export function dripperSummary(dp) {
   return [dp.shape ? DRIPPER_SHAPES[dp.shape] : null, dp.method ? DRIPPER_METHODS[dp.method].replace(/\(.*\)/, '') : null, dp.holes, dp.material, dp.cups].filter(Boolean).join(' · ');
 }
@@ -155,6 +207,10 @@ function sourceKinds(dp) {
 
 export function drippersScreen() {
   const list = store.list('drippers').sort((a, b) => a.name.localeCompare(b.name, 'ko'));
+  const on = list.filter(isActive);
+  const off = list.filter((x) => !isActive(x));
+  const dripperRow = (dp) =>
+    h('a', { class: 'list-row', href: `#/dripper/${dp.id}` }, h('div', null, h('div', null, dp.name), h('div', { class: 'hint' }, dripperSummary(dp) || '특징을 아직 적지 않았습니다'), sourceKinds(dp) ? h('div', { class: 'hint' }, sourceKinds(dp)) : null));
   return h(
     'div',
     { class: 'screen' },
@@ -162,17 +218,20 @@ export function drippersScreen() {
     h('h1', { class: 'sr-only' }, '드리퍼'),
     backToPrep(),
     h('a', { class: 'button primary wide', href: '#/dripper/new' }, '＋ 드리퍼 등록'),
+    // 이름이 같은데 특징이 달라 자동으로 합치지 못한 드리퍼(9/26 — 특징이 어긋나지 않으면 불러올 때 합친다, core/migrate.js)
+    ...sameNameGroups(list).map((g) =>
+      h('div', { class: 'notice warn' }, `이름이 같은 드리퍼 ${g.length}개 「${g[0].name}」 — 특징(${dripperConflicts(g[0], g[1]).join('·')})이 달라 자동으로 합치지 않았습니다. 하나의 이름을 고치거나 지워 주세요.`),
+    ),
     section(
       '내 드리퍼',
       h('div', { class: 'hint' }, '추출 준비에서 고르는 드리퍼입니다. 이름을 고치면 그 드리퍼를 쓴 옛 기록도 따라 바뀝니다.'),
-      ...list.map((dp) =>
-        h('a', { class: 'list-row', href: `#/dripper/${dp.id}` }, h('div', null, h('div', null, dp.name), h('div', { class: 'hint' }, dripperSummary(dp) || '특징을 아직 적지 않았습니다'), sourceKinds(dp) ? h('div', { class: 'hint' }, sourceKinds(dp)) : null)),
-      ),
-      list.length ? null : h('div', { class: 'hint' }, '등록한 드리퍼가 없습니다.'),
+      ...on.map(dripperRow),
+      on.length ? null : h('div', { class: 'hint' }, list.length ? '활성 드리퍼가 없습니다. 아래 비활성 드리퍼를 열어 [다시 활성화]하거나 새로 등록하세요.' : '등록한 드리퍼가 없습니다.'),
     ),
+    off.length ? inactiveSection(`비활성 드리퍼 (${off.length})`, h('div', { class: 'hint' }, '추출 준비 목록에 뜨지 않는 드리퍼입니다. 열어서 [다시 활성화]하면 뜹니다. 쓴 기록은 그대로입니다.'), ...off.map(dripperRow)) : null,
     section(
       '기본 목록',
-      h('div', { class: 'hint' }, `유명 드리퍼 ${DRIPPER_CATALOG.length}종입니다. 등록하지 않아도 추출 준비에서 바로 고를 수 있고, 고르면 내 드리퍼에 들어옵니다. 특징은 제조사(없으면 판매처) 페이지에 적힌 것만 넣었습니다.`),
+      h('div', { class: 'hint' }, `유명 드리퍼 ${DRIPPER_CATALOG.length}종입니다. 추출 준비에는 뜨지 않고, [＋ 드리퍼 등록] → [기본 목록에서 고르기]로 내 드리퍼에 등록하면 뜹니다. 특징은 제조사(없으면 판매처) 페이지에 적힌 것만 넣었습니다.`),
       h(
         'details',
         { class: 'sub-details' },
@@ -312,6 +371,37 @@ export function dripperFormScreen(id, { draft = null } = {}) {
     } else location.hash = '#/drippers';
   }
 
+  // 지우기(9/26 사용자 요청): 이 드리퍼를 가리키는 기록을 몇 건·어떤 것인지 보이고, 기록도 함께 지운다고 경고한 뒤 지운다.
+  // 로그(nb.logs)는 지우지 않는다 — 지운 기록의 ID·시각·레시피·원두를 dripper.delete 로그에 남긴다.
+  async function remove() {
+    const used = store.brews().filter((b) => b.conditions?.dripperId === existing.id);
+    const line = (b) => `${fmtDateTime(b.timer.startedAt)} · ${b.recipe.name} · ${b.bean?.name ?? '원두 미입력'}`;
+    const body = h(
+      'div',
+      { class: 'stack' },
+      used.length
+        ? h('div', { class: 'notice warn' }, `이 드리퍼를 쓴 기록 ${used.length}건도 함께 지웁니다. 지운 기록은 되돌릴 수 없습니다.`)
+        : h('div', null, '이 드리퍼를 쓴 기록은 없습니다. 드리퍼만 지웁니다.'),
+      used.length ? h('ul', { class: 'pick-list delete-list' }, ...used.map((b) => h('li', null, line(b)))) : null,
+    );
+    const k = await modal({
+      title: `「${existing.name}」을 지울까요?`,
+      body,
+      actions: [{ key: 'no', label: '닫기' }, { key: 'yes', label: used.length ? `기록 ${used.length}건과 함께 지우기` : '지우기', primary: true }],
+    });
+    if (k !== 'yes') {
+      logEvent('dripper.deleteCancel', { dripperId: existing.id, brews: used.length });
+      return;
+    }
+    for (const b of used) store.remove('brews', b.id);
+    store.remove('drippers', existing.id);
+    logEvent('dripper.delete', { dripperId: existing.id, name: existing.name, brews: used.length, deleted: used.map((b) => ({ id: b.id, startedAt: b.timer.startedAt, recipe: b.recipe.name, bean: b.bean?.name ?? null })) });
+    const d = loadDraft();
+    if (d?.dripperId === existing.id) saveDraft({ ...d, dripperId: null });
+    toast(used.length ? `드리퍼와 기록 ${used.length}건을 지웠습니다.` : '드리퍼를 지웠습니다.');
+    location.hash = '#/drippers';
+  }
+
   const screen = h(
     'div',
     { class: 'screen' },
@@ -353,6 +443,13 @@ export function dripperFormScreen(id, { draft = null } = {}) {
       ? section('자료', ...dp.sources.map((x) => h('div', { class: 'source' }, `${SOURCE_KINDS[x.kind] ?? x.kind}: `, x.url ? h('a', { href: x.url, target: '_blank', rel: 'noopener' }, x.label) : x.label, x.checkedAt ? ` (${x.checkedAt} 확인)` : '')))
       : null,
     h('button', { class: 'primary big wide', onClick: save }, '저장'),
+    // 비활성화(9/27): 저장된 드리퍼의 상태만 바꾸고, 화면에서 고치던 칸은 그대로 둔다(저장은 [저장])
+    existing
+      ? h('button', { type: 'button', class: 'wide', onClick: () => { const next = toggleInactive('drippers', existing, 'form'); if (next) { dp.inactive = next.inactive; redraw(); } } },
+          isActive(dp) ? '비활성화(추출 준비 목록에서 빼기)' : '다시 활성화(추출 준비 목록에 띄우기)')
+      : null,
+    existing && !isActive(dp) ? h('div', { class: 'hint' }, '비활성 드리퍼입니다. 추출 준비 목록에 뜨지 않고, 쓴 기록은 그대로입니다.') : null,
+    existing ? h('button', { type: 'button', class: 'wide quiet', onClick: remove }, '드리퍼 지우기') : null,
   );
   return screen;
 }

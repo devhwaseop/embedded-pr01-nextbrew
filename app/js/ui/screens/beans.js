@@ -2,18 +2,19 @@
 // 항목은 SCA 외재적 평가 양식의 재배·가공 항목(국가·지역·생산자·품종·가공방식)을 참고했다 — 사용자 확인 예정.
 // 노트 추천은 이전에 등록한 같은 산지·가공 원두에서만 가져온다(core/suggest.js).
 // 9/25 사용자 요청: 이름 자동 조합(직접 적기 스위치) · 배전도 슬라이더 · 구매 무게(단위 선택) · 제조일·개봉일 ·
-//   기록으로 남은 원두 추정 · 10g 이하 알림 · 「소모」 상태(목록에서 흐리게, 준비 화면 목록에서 뺀다).
+//   기록으로 남은 원두 추정 · 10g 이하 알림. 9/26 B안: 구매 무게·제조일·개봉일·상태(사용 중·보관 중(실온·냉동)·모두 소비됨)는 봉투마다(core/schema.js createBag).
 
 import { h, fill, section, field, choiceList, tagEditor, toast, toggle, numberSlider, chips, stepper, dateStepper, today, copyText, pickOne, modal } from '../dom.js';
-import { beanPrompt, readBeanText, validateBeanImport, beanPatch, applyBeanPatch } from '../../core/beanImport.js';
+import { beanPrompt, readBeanText, validateBeanImport, validateBeanList, beanPatch, applyBeanPatch, bagsText, BEAN_FIELDS } from '../../core/beanImport.js';
 import { measureListItem } from '../measureImport.js';
 import { store } from '../../core/store.js';
 import { n2,
-  createBean, beanAutoName, beanNameIsAuto, beanStock, roastedFromBestBefore, shiftMonths, formatDay,
-  PROCESS_TYPES, ROAST_LEVEL, ROAST_LEVEL_TICKS, roastWordOf, roastLabel, PROFILE_SCALES, PROFILE_ITEMS, BEAN_UNITS, DEFAULT_SHELF_MONTHS, LOW_BEAN_G,
+  createBean, beanAutoName, beanNameIsAuto, beanStock, roastedFromBestBefore, shiftMonths,
+  PROCESS_TYPES, ROAST_LEVEL, ROAST_LEVEL_TICKS, roastWordOf, roastLabel, PROFILE_SCALES, PROFILE_ITEMS, BEAN_UNITS, DEFAULT_SHELF_MONTHS,
+  createBag, beanBags, bagStock, bagDays, activeBag, setBagState, purchasedGrams, BAG_STATES, isActive, inactiveMark,
 } from '../../core/schema.js';
 import { DECAF_HELP } from '../../core/words.js';
-import { beanFacts } from '../../core/facts.js';
+import { daysLine, bagSummary } from '../../core/facts.js';
 import { suggestNotes } from '../../core/suggest.js';
 import { logEvent } from '../../core/log.js';
 import { loadDraft, saveDraft } from './brew.js';
@@ -38,69 +39,84 @@ export function beansSegment(active) {
 
 const rerender = () => window.dispatchEvent(new HashChangeEvent('hashchange'));
 
-// 상태 바꾸기(사용 중 ↔ 소모). via = 어디서 눌렀나(home|list|form). 저장소의 원두에 상태만 바꿔 쓴다(수정 중인 다른 칸은 건드리지 않음)
-export function setBeanStatus(bean, status, via) {
-  const st = beanStock(bean, store.brews(), store.list('beans'));
-  store.put('beans', { ...bean, status, consumedAt: status === 'consumed' ? new Date().toISOString() : null });
-  logEvent('bean.status', { beanId: bean.id, status, remainingG: st.remainingG, via });
+// 봉투 상태 바꾸기(9/26 B안 — 사용 중 ↔ 모두 소비됨 등). via = home|list|form|prep. 저장소의 봉투에 상태만 바꿔 쓴다(날짜는 setBagState 가 맞춘다)
+export function saveBagState(bag, next, via) {
+  const cur = structuredClone(store.get('bags', bag.id) ?? bag);
+  const from = cur.state;
+  setBagState(cur, next, today());
+  store.put('bags', cur);
+  const st = bagStock(cur, store.brews(), store.list('beans'));
+  logEvent('bag.state', { bagId: cur.id, beanId: cur.beanId, from, to: next, remainingG: st.remainingG, via });
+  return cur;
 }
 
-// 남은 원두가 10g 이하(추정)일 때의 알림 — 그 자리에서 「소모」로 바꿀 수 있다
-export function lowBeanNotice(bean, brews, via) {
-  const st = beanStock(bean, brews, store.list('beans'));
-  return h(
-    'div',
-    { class: 'notice warn notice-row' },
-    h('div', null, `「${bean.name}」 남은 원두 약 ${n2(Math.max(0, st.remainingG))}g(추정)`, h('span', { class: 'term-sub' }, '다 쓰셨으면 소모로 바꿔 주세요.')),
-    h('button', { type: 'button', onClick: () => { setBeanStatus(bean, 'consumed', via); toast('소모로 바꿨습니다.'); rerender(); } }, '소모로 바꾸기'),
+// 남은 양이 10g 이하(추정)인 봉투 알림 — 그 자리에서 「모두 소비됨」으로 바꿀 수 있다
+export function lowBagNotices(via) {
+  const brews = store.brews();
+  const beans = store.list('beans');
+  const bags = store.list('bags');
+  return beans.flatMap((b) =>
+    beanStock(b, brews, beans, bags).bags.filter((e) => e.low).map((e) =>
+      h(
+        'div',
+        { class: 'notice warn notice-row' },
+        h('div', null, `「${b.name}」${e.bag.roastedOn ? ` 봉투(제조 ${e.bag.roastedOn})` : ''} 남은 약 ${n2(Math.max(0, e.remainingG))}g(추정)`, h('span', { class: 'term-sub' }, '다 쓰셨으면 모두 소비됨으로 바꿔 주세요.')),
+        h('button', { type: 'button', onClick: () => { saveBagState(e.bag, 'consumed', via); toast('모두 소비됨으로 바꿨습니다.'); rerender(); } }, '모두 소비됨으로'),
+      ),
+    ),
   );
 }
 
-function beanRow(b, brews) {
-  const all = store.list('beans');
-  const st = beanStock(b, brews, all);
-  // 이름이 좁아지지 않게 날짜·남은 양은 이름 아래 줄에 두고, 오른쪽에는 상태 표시만 둔다
+// 원두 한 줄(칸 안의 상자): 이름 · 로스터리·종류·배전도 · 봉투 요약 · 지금 쓰는 봉투의 일수
+function beanRow(b, st, bags) {
   const kind = blendKind(b);
   const meta = [b.roaster, kind !== 'single' ? BLEND_KINDS[kind] : null, roastLabel(b), b.decaf ? '디카페인' : null].filter(Boolean).join(' · ');
-  const facts = b.status === 'consumed' ? '' : beanFacts(b, brews, Date.now(), all).join(' · ');
+  const cur = activeBag(b.id, bags);
+  const days = cur ? daysLine(bagDays(cur)) : '';
   return h(
     'a',
-    { class: `list-row${b.status === 'consumed' ? ' inactive' : ''}`, href: `#/bean/${b.id}` },
-    h('div', null, h('div', null, b.name), meta ? h('div', { class: 'hint' }, meta) : null, facts ? h('div', { class: 'hint' }, facts) : null),
-    b.status === 'consumed' ? h('div', { class: 'right hint' }, '소모') : st.low ? h('div', { class: 'right badge' }, '거의 다 씀') : null,
+    { class: 'list-row', href: `#/bean/${b.id}` },
+    h('div', null, h('div', null, b.name), meta ? h('div', { class: 'hint' }, meta) : null, h('div', { class: 'hint' }, bagSummary(st)), days ? h('div', { class: 'hint' }, days) : null),
+    st.consumed ? h('div', { class: 'right hint' }, BAG_STATES.consumed) : st.low ? h('div', { class: 'right badge' }, '거의 다 씀') : null,
   );
 }
 
 export function beansScreen() {
   const brews = store.brews();
-  const all = store.list('beans').sort((a, b) => a.name.localeCompare(b.name, 'ko'));
-  const active = all.filter((b) => b.status !== 'consumed');
-  const used = all.filter((b) => b.status === 'consumed');
+  const beans = store.list('beans');
+  const bags = store.list('bags');
+  const all = [...beans].sort((a, b) => a.name.localeCompare(b.name, 'ko'));
+  const stock = new Map(all.map((b) => [b.id, beanStock(b, brews, beans, bags)]));
+  const held = all.filter((b) => !stock.get(b.id).consumed);
+  const used = all.filter((b) => stock.get(b.id).consumed);
+  const row = (b) => beanRow(b, stock.get(b.id), bags);
   return h(
     'div',
     { class: 'screen' },
     beansSegment('beans'),
     h('h1', { class: 'sr-only' }, '원두'),
     h('a', { class: 'button primary wide', href: '#/bean/new' }, '＋ 원두 등록'),
-    ...active.filter((b) => beanStock(b, brews, all).low).map((b) => lowBeanNotice(b, brews, 'list')),
-    // 홈 「최근 기록」처럼 칸 안에 줄마다 상자(9/26 사용자 요청)
-    active.length ? section('사용 중인 원두', ...active.map((b) => beanRow(b, brews))) : null,
-    all.length ? null : section(null, h('div', { class: 'hint' }, '등록한 원두가 없습니다.')),
-    used.length ? section('다 쓴 원두', ...used.map((b) => beanRow(b, brews))) : null,
+    h('a', { class: 'button wide', href: '#/beans/ai' }, 'AI 로 여러 원두 한꺼번에 등록'),
+    ...lowBagNotices('list'),
+    // 9/26 사용자 요청: 위에 보유 중인 원두, 아래 소비된 원두 — 칸마다 상자, 그 안에 원두마다 상자. 소비된 쪽은 글자를 회색으로(비활성 느낌)
+    all.length ? section('보유 중인 원두', ...(held.length ? held.map(row) : [h('div', { class: 'hint' }, '보유 중인 원두가 없습니다.')])) : section(null, h('div', { class: 'hint' }, '등록한 원두가 없습니다.')),
+    used.length ? h('section', { class: 'card consumed-list' }, h('h2', null, '소비된 원두'), ...used.map(row)) : null,
     templatesSection(),
   );
 }
 
 // 블렌드 템플릿 목록(9/26 사용자 결정 — 추출할 때 섞는 비율은 원두와 따로 등록한다)
+// 비활성 템플릿(9/27 조건부 도입 — 자리를 많이 차지하면 다시 본다): 목록 아래 접힌 한 줄 「비활성 템플릿 N」 안에만 둔다. 없으면 그 줄도 없다.
 function templatesSection() {
   const list = store.list('blends').sort((a, b) => a.name.localeCompare(b.name, 'ko'));
   const nameOf = (p) => store.get('beans', p.beanId)?.name ?? p.name;
+  const row = (t) => h('a', { class: 'list-row', href: `#/blend/${t.id}` }, h('div', null, h('div', null, t.name), h('div', { class: 'hint' }, partsLine(t.parts.map((p) => ({ ...p, name: nameOf(p) })), { kind: 'ratio' }))));
+  const off = list.filter((t) => !isActive(t));
   return section(
     '블렌드 템플릿',
     h('div', { class: 'hint' }, '추출할 때 가진 원두를 섞는 비율입니다. 추출 준비에서 고르면 원두량을 비율대로 나눠 원두마다 남은 양에서 뺍니다. 미리 섞어 담아 둔 원두는 위 원두 등록에서 「내가 섞은 블렌드」로 등록하세요.'),
-    ...list.map((t) =>
-      h('a', { class: 'list-row', href: `#/blend/${t.id}` }, h('div', null, h('div', null, t.name), h('div', { class: 'hint' }, partsLine(t.parts.map((p) => ({ ...p, name: nameOf(p) })), { kind: 'ratio' })))),
-    ),
+    ...list.filter(isActive).map(row),
+    off.length ? h('details', { class: 'sub-details off' }, h('summary', null, `비활성 템플릿 ${off.length}`), ...off.map(row)) : null,
     h('a', { class: 'button wide', href: '#/blend/new' }, '＋ 블렌드 템플릿 등록'),
   );
 }
@@ -111,13 +127,13 @@ export function beanFormScreen(id, { draft = null } = {}) {
   if (id !== 'new' && !existing) return h('div', { class: 'screen' }, '원두를 찾을 수 없습니다.');
   // 9/25 전에 등록한 원두는 nameAuto 가 없어 «직접»으로 연다(직접 적은 이름을 지킨다)
   const bean = draft ? structuredClone(draft) : existing ? { ...createBean({ id: existing.id }), ...structuredClone(existing), nameAuto: beanNameIsAuto(existing) } : createBean();
-  // 새 원두는 제조일·개봉일을 오늘로 채워 둔다(사용자 요청 9/25 — 오늘에서 며칠 옮기는 것이 빠르다). 모르면 [비우기].
-  // 이미 등록한 원두의 빈 날짜는 채우지 않는다 — 다른 칸만 고쳐 저장해도 날짜가 생기는 일을 막으려고(−/+ 는 오늘부터 움직인다).
-  if (!existing && !draft) {
-    bean.roastedOn = today();
-    bean.openedOn = today();
-  }
-  let startStatus = bean.status;
+  // 봉투(9/26 B안): 화면에서 고치는 사본. 다시 그릴 때는 bean._bags 로 넘기고 저장할 때 뗀다.
+  // 새 원두는 봉투 하나를 오늘 제조·개봉한 「사용 중」으로 채워 둔다(9/25 — 오늘에서 며칠 옮기는 것이 빠르다. 모르면 [비우기]).
+  const savedBags = existing ? beanBags(existing.id, store.list('bags')) : [];
+  const bags = bean._bags ?? (existing ? savedBags.map((g) => structuredClone(g)) : [createBag({ beanId: bean.id, state: 'inUse', roastedOn: today(), openedOn: today() })]);
+  delete bean._bags;
+  const startBags = new Map(savedBags.map((g) => [g.id, JSON.stringify(g)]));
+  const redraw = () => screen.replaceWith(beanFormScreen(id, { draft: { ...bean, _bags: bags } }));
   const others = () => store.list('beans');
   const usedProcesses = [...new Set([...PROCESS_TYPES, ...others().map((b) => b.process).filter(Boolean)])];
   // 직접 넣은 가공방식에는 어느 원두에서 왔는지 붙인다(9/26 사용자 요청 — 「? (콩볶는사람들 · 인도네시아)」, 로스터리가 길면 줄임).
@@ -136,9 +152,6 @@ export function beanFormScreen(id, { draft = null } = {}) {
   // 글자를 치는 칸이 초점을 잃지 않게 화면 전체를 다시 그리지 않고, 바뀌는 칸만 따로 그린다.
   const nameBox = h('div', { class: 'stack' });
   const notesBox = h('div', { class: 'stack' });
-  const stockBox = h('div');
-  const roastedBox = h('div', { class: 'stack' });
-  const statusBox = h('div', { class: 'stack' });
   const decafBox = h('div', { class: 'stack' });
   const profileBox = h('div', { class: 'stack' });
 
@@ -249,100 +262,90 @@ export function beanFormScreen(id, { draft = null } = {}) {
     );
   }
 
-  // 남은 원두(추정) = 구매 무게 − 이 원두 기록들의 원두량 합
-  function drawStock() {
-    const st = beanStock(bean, store.brews(), store.list('beans'));
-    fill(
-      stockBox,
-      st.totalG == null
-        ? h('div', { class: 'hint' }, '구매 무게를 넣으면 기록으로 남은 원두를 셉니다.')
-        : h(
-            'div',
-            { class: st.low ? 'notice warn' : 'hint' },
-            // 미리 섞은 블렌드에 넣은 무게는 «섞음»으로 뺀다(9/26)
-            `${kind === 'me' ? '섞은 무게' : '구매'} ${n2(st.totalG)}g − 기록 ${st.brews}건 ${n2(st.usedG)}g${st.mixedG ? ` − 섞음 ${n2(st.mixedG)}g` : ''} = 남은 약 ${n2(Math.max(0, st.remainingG))}g(추정)`,
-            st.low ? h('span', { class: 'term-sub' }, `${LOW_BEAN_G}g 이하입니다. 다 쓰셨으면 아래 상태를 「소모」로 바꿔 주세요.`) : null,
-          ),
-    );
-  }
-
-  const unitSelect = h(
-    'select',
-    { class: 'unit', onChange: (e) => { if (bean.purchased) bean.purchased = { ...bean.purchased, unit: e.target.value }; drawStock(); } },
-    ...Object.entries(BEAN_UNITS).map(([k, u]) => h('option', { value: k, selected: (bean.purchased?.unit ?? 'g') === k }, u.label)),
-  );
-  const amountInput = h('input', {
-    type: 'number', inputmode: 'decimal', min: 0, step: 'any', value: bean.purchased?.amount ?? '', placeholder: '예: 200',
-    onInput: (e) => {
-      const v = e.target.value === '' ? null : Number(e.target.value);
-      bean.purchased = v == null ? null : { amount: v, unit: unitSelect.value };
-      drawStock();
-    },
-  });
-
-  // 제조일(로스팅일). 봉투에 소비기한만 있으면 거꾸로 센다 — 기간은 로스터리마다 달라 결과는 «추정»이다.
-  // 소비기한 칸의 처음 값 = 오늘 + 기간(오늘 볶았다면 찍혔을 날짜) — 거기서 봉투 날짜로 옮긴다.
-  let shelfMonths = bean.roastedOnFrom?.months ?? DEFAULT_SHELF_MONTHS;
-  let bestBefore = bean.roastedOnFrom?.bestBefore ?? shiftMonths(today(), shelfMonths);
-  function drawRoasted() {
-    const est = h('div', { class: 'hint' }, bean.roastedOnFrom ? `소비기한 ${bean.roastedOnFrom.bestBefore}에서 ${bean.roastedOnFrom.months}개월을 뺀 추정값입니다.` : '');
-    est.classList.toggle('hidden', !bean.roastedOnFrom);
-    fill(
-      roastedBox,
-      dateStepper({ value: bean.roastedOn, onChange: (v) => { bean.roastedOn = v; bean.roastedOnFrom = null; est.classList.add('hidden'); } }),
-      est,
+  // ── 봉투(9/26 사용자 결정 B안) ──────────────────────────────
+  // 봉투마다 상자: 상태 칩 · 구매 무게 · 제조일(소비기한으로 셈) · 개봉일 · 얼린 날·꺼낸 날 · 일수 · 남은 양 · [이 봉투 복사해 추가] · [봉투 지우기].
+  // 상태를 바꾸면 날짜를 함께 맞춘다(core/schema.js setBagState). 저장은 원두 [저장]에서 한꺼번에.
+  const bagsBox = h('div', { class: 'stack' });
+  const brewsNow = store.brews();
+  const beansFor = () => [...store.list('beans').filter((x) => x.id !== bean.id), bean]; // 섞은 블렌드 계산에 지금 적는 구성을 쓴다
+  const mixG = () => (bean.blend?.parts ?? []).reduce((a, p) => a + (Number(p.g) || 0), 0);
+  const stateKey = (label) => Object.keys(BAG_STATES).find((k) => BAG_STATES[k] === label) ?? null;
+  function roastedEditor(bag, draw) {
+    let months = bag.roastedOnFrom?.months ?? DEFAULT_SHELF_MONTHS;
+    let bestBefore = bag.roastedOnFrom?.bestBefore ?? shiftMonths(today(), months);
+    return h(
+      'div',
+      { class: 'stack' },
+      dateStepper({ value: bag.roastedOn, onChange: (v) => { bag.roastedOn = v; bag.roastedOnFrom = null; draw(); } }),
+      bag.roastedOnFrom ? h('div', { class: 'hint' }, `소비기한 ${bag.roastedOnFrom.bestBefore}에서 ${bag.roastedOnFrom.months}개월을 뺀 추정값입니다.`) : null,
+      // 봉투에 소비기한만 있으면 거꾸로 센다 — 기간은 로스터리마다 달라 결과는 «추정»(9/25). 소비기한 처음 값 = 오늘 + 기간
       h(
         'details',
-        { class: 'sub-details', open: Boolean(bean.roastedOnFrom) },
+        { class: 'sub-details', open: Boolean(bag.roastedOnFrom) },
         h('summary', null, '봉투에 소비기한만 있으면'),
         field('소비기한', dateStepper({ value: bestBefore, clearable: false, onChange: (v) => (bestBefore = v) })),
-        field(
-          '소비기한까지 기간',
-          stepper({ value: shelfMonths, step: 1, min: 1, max: 36, unit: '개월', onChange: (v) => (shelfMonths = v ?? DEFAULT_SHELF_MONTHS) }),
-          '로스터리마다 6개월~2년으로 달라, 처음 값 12개월은 흔한 값일 뿐입니다. 봉투나 로스터리 안내에 기간이 있으면 그 값으로 바꾸세요.',
-        ),
+        field('소비기한까지 기간', stepper({ value: months, step: 1, min: 1, max: 36, unit: '개월', onChange: (v) => (months = v ?? DEFAULT_SHELF_MONTHS) }),
+          '로스터리마다 6개월~2년으로 달라, 처음 값 12개월은 흔한 값일 뿐입니다. 봉투나 로스터리 안내에 기간이 있으면 그 값으로 바꾸세요.'),
         h('button', {
           type: 'button',
           onClick: () => {
-            const r = roastedFromBestBefore(bestBefore, shelfMonths);
+            const r = roastedFromBestBefore(bestBefore, months);
             if (!r) return toast('소비기한 날짜를 넣어 주세요.');
-            bean.roastedOn = r;
-            bean.roastedOnFrom = { bestBefore, months: shelfMonths };
-            drawRoasted();
+            Object.assign(bag, { roastedOn: r, roastedOnFrom: { bestBefore, months } });
+            draw();
           },
         }, '제조일 계산'),
       ),
     );
   }
-
-  // 상태(사용자 요청 9/25): 수정 화면에서 언제든 [소모로 바꾸기]·[사용 중으로 복구] — 눈에 띄지 않는 작은 버튼. 누르면 바로 저장된다.
-  // 홈·원두 목록의 10g 이하 알림과 [소모로 바꾸기]는 그대로 있다. 새 원두는 저장한 뒤에 바꿀 수 있다.
-  function drawStatus() {
-    if (!existing) return fill(statusBox);
-    const consumed = bean.status === 'consumed';
-    const when = consumed && bean.consumedAt ? ` · ${formatDay(new Date(bean.consumedAt))}` : '';
+  function bagEditor(bag, i) {
+    const box = h('div', { class: 'bag-box' });
+    const draw = () => {
+      const st = bagStock(bag, brewsNow, beansFor());
+      const days = daysLine(bagDays(bag));
+      const usedBy = brewsNow.some((x) => x.bean?.bagId === bag.id || x.bean?.parts?.some((q) => q.bagId === bag.id));
+      const unit = h('select', { class: 'unit', onChange: (e) => { if (bag.purchased) bag.purchased = { ...bag.purchased, unit: e.target.value }; draw(); } },
+        ...Object.entries(BEAN_UNITS).map(([k, u]) => h('option', { value: k, selected: (bag.purchased?.unit ?? 'g') === k }, u.label)));
+      const amount = h('input', {
+        type: 'number', inputmode: 'decimal', min: 0, step: 'any', value: bag.purchased?.amount ?? '', placeholder: '예: 200',
+        onInput: (e) => { const v = e.target.value === '' ? null : Number(e.target.value); bag.purchased = v == null ? null : { amount: v, unit: unit.value }; },
+        onChange: () => draw(),
+      });
+      const last = bag.freezes?.[bag.freezes.length - 1] ?? null;
+      const setLast = (k, v) => { bag.freezes = bag.freezes.map((f, j) => (j === bag.freezes.length - 1 ? { ...f, [k]: v } : f)); draw(); };
+      box.classList.toggle('consumed', bag.state === 'consumed');
+      fill(
+        box,
+        h('div', { class: 'row-line' }, h('b', null, `봉투 ${i + 1}`), h('span', { class: 'hint' }, BAG_STATES[bag.state])),
+        chips({ options: Object.values(BAG_STATES), selected: BAG_STATES[bag.state], onChange: (label) => { const k = stateKey(label); if (k) setBagState(bag, k, today()); draw(); } }),
+        kind === 'me'
+          ? h('div', { class: 'hint' }, `섞은 무게 ${n2(mixG())}g(위 「섞은 원두」에서 셈)`)
+          : field('구매 무게', h('div', { class: 'row amount' }, amount, unit)),
+        st.totalG == null
+          ? h('div', { class: 'hint' }, '구매 무게를 넣으면 기록으로 남은 양을 셉니다.')
+          : h('div', { class: st.low ? 'notice warn' : 'hint' }, `${kind === 'me' ? '섞은 무게' : '구매'} ${n2(st.totalG)}g − 기록 ${st.brews}건 ${n2(st.usedG)}g${st.mixedG ? ` − 섞음 ${n2(st.mixedG)}g` : ''} = 남은 약 ${n2(Math.max(0, st.remainingG))}g(추정)`),
+        kind === 'me' ? null : field('제조일(로스팅일)', roastedEditor(bag, draw)),
+        bag.openedOn || bag.state === 'inUse' || bag.state === 'inUseFrozen' ? field(kind === 'me' ? '섞은 날' : '개봉일', dateStepper({ value: bag.openedOn, onChange: (v) => { bag.openedOn = v; draw(); } })) : null,
+        last ? field('얼린 날', dateStepper({ value: last.on, clearable: false, onChange: (v) => setLast('on', v) }), bag.freezes.length > 1 ? `냉동 ${bag.freezes.length}번째` : null) : null,
+        last?.off ? field('꺼낸 날', dateStepper({ value: last.off, clearable: false, onChange: (v) => setLast('off', v) })) : null,
+        days ? h('div', { class: 'hint' }, days) : null,
+        h('div', { class: 'row wrap' },
+          kind === 'me' ? null : h('button', { type: 'button', class: 'inline-btn', onClick: () => { bags.push(createBag({ beanId: bean.id, purchased: structuredClone(bag.purchased), roastedOn: bag.roastedOn, roastedOnFrom: structuredClone(bag.roastedOnFrom), state: 'stored' })); drawBags(); } }, '이 봉투 복사해 추가'),
+          bags.length > 1 ? h('button', { type: 'button', class: 'inline-btn quiet', onClick: () => {
+            if (usedBy) return toast('이 봉투로 내린 기록이 있어 지울 수 없습니다. 다 썼으면 「모두 소비됨」으로 바꿔 주세요.');
+            bags.splice(bags.indexOf(bag), 1);
+            drawBags();
+          } }, '봉투 지우기') : null),
+      );
+    };
+    draw();
+    return box;
+  }
+  function drawBags() {
     fill(
-      statusBox,
-      h(
-        'div',
-        { class: 'row-line' },
-        h('span', null, consumed ? `소모한 원두${when}` : '사용 중'),
-        h('button', {
-          type: 'button',
-          class: 'inline-btn quiet',
-          onClick: () => {
-            const next = consumed ? 'active' : 'consumed';
-            setBeanStatus(store.get('beans', bean.id) ?? bean, next, 'form');
-            bean.status = next;
-            bean.consumedAt = store.get('beans', bean.id)?.consumedAt ?? null;
-            startStatus = next; // 저장할 때 같은 변경을 한 번 더 남기지 않게
-            toast(consumed ? '사용 중으로 되돌렸습니다.' : '소모로 바꿨습니다.');
-            drawStatus();
-            drawStock();
-          },
-        }, consumed ? '사용 중으로 복구' : '소모로 바꾸기'),
-      ),
-      h('div', { class: 'hint' }, consumed ? '추출 준비의 원두 목록에서 빠져 있습니다. 복구하면 다시 나옵니다.' : '다 쓴 원두는 소모로 바꾸면 목록에서 흐리게 보이고, 추출 준비의 원두 목록에서 빠집니다.'),
+      bagsBox,
+      ...bags.map((g, i) => bagEditor(g, i)),
+      kind === 'me' ? null : h('button', { type: 'button', class: 'inline-btn', onClick: () => { bags.push(createBag({ beanId: bean.id, state: 'stored' })); drawBags(); } }, '＋ 봉투 추가'),
     );
   }
 
@@ -367,7 +370,7 @@ export function beanFormScreen(id, { draft = null } = {}) {
       logEvent('bean.aiImportFail', { beanId: bean.id, stage: 'check', via, errors });
       return fill(aiBox, h('div', { class: 'notice error' }, '확인이 필요합니다', h('ul', null, ...errors.map((x) => h('li', null, x)))));
     }
-    const rows = beanPatch(bean, value);
+    const rows = beanPatch({ ...bean, roastedOn: bags[0]?.roastedOn ?? null }, value);
     const picked = new Set(rows.filter((r) => !r.same && !r.conflict).map((r) => r.key));
     fill(
       aiBox,
@@ -387,9 +390,21 @@ export function beanFormScreen(id, { draft = null } = {}) {
               class: 'primary wide',
               onClick: () => {
                 applyBeanPatch(bean, value, [...picked]);
+                // 제조일·봉투는 봉투 칸에(9/26 B안): 제조일 → 첫 봉투, 봉투(무게·개수) → 첫 봉투를 채우고 나머지는 「보관 중(실온)」 봉투로 더함
+                if (picked.has('roastedOn') && bags[0]) Object.assign(bags[0], { roastedOn: value.roastedOn, roastedOnFrom: null });
+                if (picked.has('bags')) {
+                  const want = value.bags.flatMap((g) => Array.from({ length: g.count }, () => g));
+                  want.forEach((g, k) => {
+                    const fields = { purchased: g.amount != null ? { amount: g.amount, unit: g.unit } : null, ...(g.roastedOn ? { roastedOn: g.roastedOn, roastedOnFrom: null } : {}) };
+                    if (k === 0 && bags[0]) Object.assign(bags[0], fields);
+                    else bags.push(createBag({ beanId: bean.id, state: 'stored', ...fields }));
+                  });
+                }
+                delete bean.roastedOn;
+                delete bean.bags;
                 logEvent('bean.aiImport', { beanId: bean.id, via, fields: [...picked], skipped: rows.filter((r) => !picked.has(r.key)).map((r) => r.key), uncertain: value.uncertain.length, warnings: warnings.length, fixes: fixes.length });
                 toast('칸을 채웠습니다. 확인한 뒤 [저장]을 눌러 주세요.');
-                screen.replaceWith(beanFormScreen(id, { draft: bean }));
+                redraw();
               },
             }, '고른 칸 채우기'),
           )
@@ -427,11 +442,14 @@ export function beanFormScreen(id, { draft = null } = {}) {
   // 봉투마다 다른 것(구매 무게·제조일·개봉일·상태)과 메모(원두별로 따로 — 9/26 사용자 확인)·분쇄 측정(원두별)은 옮기지 않는다.
   const COPY_KEYS = ['name', 'nameAuto', 'roaster', 'country', 'region', 'producer', 'variety', 'process', 'blend', 'roast', 'roastLevel', 'roastLevelFrom', 'decaf', 'notes', 'roasterProfile'];
   async function copyFromPrevious() {
-    const list = store.list('beans').sort((a, b) => (b.roastedOn ?? b.updatedAt ?? '').localeCompare(a.roastedOn ?? a.updatedAt ?? ''));
+    const allBags = store.list('bags');
+    const latest = (b) => beanBags(b.id, allBags).map((g) => g.roastedOn ?? '').sort().pop() ?? '';
+    const gone = (b) => beanStock(b, [], [], allBags).consumed;
+    const list = store.list('beans').sort((a, b) => (latest(b) || b.updatedAt || '').localeCompare(latest(a) || a.updatedAt || ''));
     const r = await pickOne({
       title: '어느 원두의 내용을 가져올까요?',
-      hint: '같은 원두를 다시 샀을 때 씁니다. 구매 무게·날짜·메모는 새로 적습니다.',
-      items: list.map((b) => ({ value: b, label: b.name, sub: [b.roaster, b.roastedOn ? `제조 ${b.roastedOn}` : null, b.status === 'consumed' ? '소모' : null].filter(Boolean).join(' · '), inactive: b.status === 'consumed' })),
+      hint: '비슷한 원두를 등록할 때 씁니다(같은 원두를 또 샀으면 그 원두에 봉투를 더하세요). 구매 무게·날짜·메모는 새로 적습니다.',
+      items: list.map((b) => ({ value: b, label: b.name, sub: [b.roaster, latest(b) ? `제조 ${latest(b)}` : null, gone(b) ? BAG_STATES.consumed : null].filter(Boolean).join(' · '), inactive: gone(b) })),
       emptyText: '등록한 원두가 없습니다.',
     });
     if (!r?.value) return;
@@ -440,7 +458,7 @@ export function beanFormScreen(id, { draft = null } = {}) {
     bean.nameAuto = beanNameIsAuto(src);
     logEvent('bean.copyFrom', { fromId: src.id, fromName: src.name, fields: COPY_KEYS.filter((k) => src[k] != null && src[k] !== '') });
     toast('이전 원두 내용을 채웠습니다. 날짜·구매 무게를 확인한 뒤 [저장]을 눌러 주세요.');
-    screen.replaceWith(beanFormScreen(id, { draft: bean }));
+    redraw();
   }
 
   // 원두 종류(9/26 사용자 요청 — 블렌드). 바꾸면 칸 구성이 달라져 화면을 다시 그린다(저장 전 값은 그대로 넘긴다).
@@ -455,9 +473,13 @@ export function beanFormScreen(id, { draft = null } = {}) {
         // 싱글에서 로스터리 블렌드로: 적어 둔 산지를 첫 줄로 옮겨 둔다
         else if (next === 'roaster') bean.blend = { by: 'roaster', parts: [{ ...blank, country: bean.country ?? '', region: bean.region ?? '', variety: bean.variety ?? '', process: bean.process ?? '' }, { ...blank }] };
         // 내가 섞은 블렌드: 제조일은 원두마다 달라 비운다(섞은 날 = 개봉일 칸)
-        else Object.assign(bean, { blend: { by: 'me', parts: [{ beanId: null, name: '', g: null }, { beanId: null, name: '', g: null }] }, roastedOn: null, roastedOnFrom: null });
+        else {
+          bean.blend = { by: 'me', parts: [{ beanId: null, name: '', g: null }, { beanId: null, name: '', g: null }] };
+          bags.splice(1);
+          if (bags[0]) Object.assign(bags[0], { roastedOn: null, roastedOnFrom: null });
+        }
       }
-      screen.replaceWith(beanFormScreen(id, { draft: bean }));
+      redraw();
     },
   });
 
@@ -468,8 +490,8 @@ export function beanFormScreen(id, { draft = null } = {}) {
     // 섞은 뒤 남은 양: 저장된 이 블렌드 대신 지금 적는 구성으로 센다
     const beans = [...store.list('beans').filter((x) => x.id !== bean.id), bean];
     for (const [p, span] of mixHints) {
-      const b = p.beanId ? store.get('beans', p.beanId) : null;
-      const st = b ? beanStock(b, store.brews(), beans) : null;
+      const g = p.bagId ? store.get('bags', p.bagId) : p.beanId ? activeBag(p.beanId, store.list('bags')) : null; // 덜어 낸 봉투
+      const st = g ? bagStock(g, store.brews(), beans) : null;
       span.textContent = st?.remainingG == null ? '' : st.remainingG < 0 ? `섞은 뒤 약 ${n2(st.remainingG)}g — 모자랍니다` : `섞은 뒤 남은 약 ${n2(st.remainingG)}g`;
       span.className = st?.remainingG != null && st.remainingG < 0 ? 'warn-text' : 'hint';
     }
@@ -479,7 +501,7 @@ export function beanFormScreen(id, { draft = null } = {}) {
     const parts = bean.blend.parts;
     const remove = (i) =>
       parts.length > 1
-        ? h('button', { type: 'button', class: 'chip-x inline', 'aria-label': '이 줄 빼기', onClick: () => { parts.splice(i, 1); drawName(); drawParts(); drawStock(); } }, h('span', { 'aria-hidden': 'true' }, '×'))
+        ? h('button', { type: 'button', class: 'chip-x inline', 'aria-label': '이 줄 빼기', onClick: () => { parts.splice(i, 1); drawName(); drawParts(); drawBags(); } }, h('span', { 'aria-hidden': 'true' }, '×'))
         : null;
     mixHints.length = 0;
     const rows = parts.map((p, i) => {
@@ -495,17 +517,17 @@ export function beanFormScreen(id, { draft = null } = {}) {
         );
       }
       // 섞을 수 있는 원두: 이 원두·다른 «내가 섞은 블렌드»는 빼고(섞은 것을 또 섞으면 남은 양 셈이 꼬인다), 다 쓴 원두는 이미 고른 것만
-      const options = store.list('beans').filter((b) => b.id !== bean.id && blendKind(b) !== 'me' && (b.status !== 'consumed' || b.id === p.beanId)).sort((a, b) => a.name.localeCompare(b.name, 'ko'));
+      const options = store.list('beans').filter((b) => b.id !== bean.id && blendKind(b) !== 'me' && (!beanStock(b, [], [], store.list('bags')).consumed || b.id === p.beanId)).sort((a, b) => a.name.localeCompare(b.name, 'ko'));
       const hint = h('span', { class: 'hint' });
       mixHints.push([p, hint]);
       return h(
         'div',
         { class: 'blend-row' },
         h('div', { class: 'row-line' }, h('span', { class: 'field-label' }, `원두 ${i + 1}`), remove(i)),
-        h('select', { onChange: (e) => { const b = store.get('beans', e.target.value); p.beanId = b?.id ?? null; p.name = b?.name ?? ''; drawName(); drawMixHints(); } },
+        h('select', { onChange: (e) => { const b = store.get('beans', e.target.value); p.beanId = b?.id ?? null; p.name = b?.name ?? ''; p.bagId = b ? activeBag(b.id, store.list('bags'))?.id ?? null : null; drawName(); drawMixHints(); drawBags(); } },
           h('option', { value: '', selected: !p.beanId }, '원두 고르기'),
           ...options.map((b) => h('option', { value: b.id, selected: b.id === p.beanId }, b.name))),
-        h('div', { class: 'row amount' }, h('input', { type: 'number', inputmode: 'decimal', min: 0, step: 'any', value: p.g ?? '', placeholder: '섞은 무게', onInput: (e) => { p.g = e.target.value === '' ? null : Number(e.target.value); drawStock(); drawMixHints(); } }), h('span', { class: 'unit' }, 'g')),
+        h('div', { class: 'row amount' }, h('input', { type: 'number', inputmode: 'decimal', min: 0, step: 'any', value: p.g ?? '', placeholder: '섞은 무게', onInput: (e) => { p.g = e.target.value === '' ? null : Number(e.target.value); drawMixHints(); }, onChange: () => drawBags() }), h('span', { class: 'unit' }, 'g')),
         hint,
       );
     });
@@ -528,8 +550,11 @@ export function beanFormScreen(id, { draft = null } = {}) {
       const parts = bean.blend.parts.filter((p) => p.beanId && Number(p.g) > 0);
       if (!parts.length) return toast('섞은 원두와 무게를 하나 이상 넣어 주세요.');
       if (new Set(parts.map((p) => p.beanId)).size !== parts.length) return toast('같은 원두가 두 줄에 있습니다. 한 줄로 합쳐 주세요.');
-      bean.blend = { by: 'me', parts };
-      bean.purchased = null; // 양 = 섞은 무게 합(core/schema.js beanStock)
+      // 덜어 낸 봉투: 고를 때 정한 것, 없으면 그 원두의 지금 봉투. 블렌드는 봉투 하나 = 섞은 무게 합(9/26 B안)
+      bean.blend = { by: 'me', parts: parts.map((p) => ({ ...p, bagId: p.bagId ?? activeBag(p.beanId, store.list('bags'))?.id ?? null })) };
+      bags.splice(1);
+      bags[0] ??= createBag({ beanId: bean.id, state: 'inUse', openedOn: today() });
+      bags[0].purchased = { amount: Math.round(mixG() * 100) / 100, unit: 'g' };
     } else if (kind === 'roaster') {
       const parts = bean.blend.parts.filter((p) => ['country', 'region', 'variety', 'process'].some((k) => (p[k] ?? '').trim()));
       if (!parts.length) return toast('블렌드 구성(국가 등)을 하나 이상 넣어 주세요.');
@@ -539,16 +564,27 @@ export function beanFormScreen(id, { draft = null } = {}) {
     if (kind !== 'single') Object.assign(bean, { country: '', region: '', producer: '', variety: '', process: '' });
     bean.name = (bean.nameAuto ? autoName() : bean.name ?? '').trim();
     if (!bean.name) return toast(bean.nameAuto ? (kind === 'single' ? '국가·지역 같은 항목을 넣거나, 이름을 직접 적어 주세요.' : '구성을 넣거나, 이름을 직접 적어 주세요.') : '원두 이름을 넣어 주세요.');
-    if (bean.status !== startStatus) bean.consumedAt = bean.status === 'consumed' ? new Date().toISOString() : null;
     store.put('beans', bean);
-    const st = beanStock(bean, store.brews(), store.list('beans'));
-    logEvent('bean.save', { beanId: bean.id, name: bean.name, nameAuto: bean.nameAuto, status: bean.status, totalG: st.totalG, remainingG: st.remainingG, kind, parts: bean.blend?.parts.length ?? 0 });
-    if (existing && bean.status !== startStatus) logEvent('bean.status', { beanId: bean.id, status: bean.status, remainingG: st.remainingG, via: 'form' });
+    // 봉투: 바뀐 것만 쓰고, 지운 봉투는 뺀다(기록이 쓴 봉투는 화면에서 못 지운다)
+    for (const g of bags) {
+      g.beanId = bean.id;
+      const before = startBags.get(g.id);
+      if (before === JSON.stringify(g)) continue;
+      store.put('bags', g);
+      logEvent('bag.save', { bagId: g.id, beanId: bean.id, state: g.state, from: before ? JSON.parse(before).state : null, amountG: purchasedGrams(g), roastedOn: g.roastedOn, freezes: g.freezes?.length ?? 0 });
+    }
+    for (const bagId of startBags.keys()) {
+      if (bags.some((g) => g.id === bagId)) continue;
+      store.remove('bags', bagId);
+      logEvent('bag.delete', { bagId, beanId: bean.id });
+    }
+    const st = beanStock(bean, store.brews(), store.list('beans'), store.list('bags'));
+    logEvent('bean.save', { beanId: bean.id, name: bean.name, nameAuto: bean.nameAuto, bags: bags.length, consumed: st.consumed, remainingG: st.remainingG, kind, parts: bean.blend?.parts.length ?? 0 });
     // 준비 화면에서 등록하러 왔으면 방금 등록한 원두를 골라 두고 돌아간다
     if (sessionStorage.getItem('nb.returnTo') === '#/prep') {
       sessionStorage.removeItem('nb.returnTo');
       const d = loadDraft();
-      if (d) saveDraft({ ...d, beanId: bean.status === 'consumed' ? d.beanId : bean.id, beanName: '' });
+      if (d) saveDraft({ ...d, beanId: st.consumed ? d.beanId : bean.id, bagId: null, blendId: null, beanName: '' });
       location.hash = '#/prep';
     } else {
       location.hash = '#/beans';
@@ -557,9 +593,7 @@ export function beanFormScreen(id, { draft = null } = {}) {
 
   drawName();
   drawNotes();
-  drawStock();
-  drawRoasted();
-  drawStatus();
+  drawBags();
   drawDecaf();
   drawProfile();
   drawParts();
@@ -615,13 +649,11 @@ export function beanFormScreen(id, { draft = null } = {}) {
       field('노트', notesBox),
       field('로스터리 맛 지표', profileBox),
     ),
+    // 봉투(9/26 B안): 같은 원두를 여러 봉 샀으면 봉투를 더한다. 봉투마다 무게·제조일·보관 상태, 남은 양도 봉투마다
     section(
-      '보관',
-      kind === 'me' ? null : field('구매 무게', h('div', { class: 'row amount' }, amountInput, unitSelect)),
-      stockBox,
-      kind === 'me' ? null : field('제조일(로스팅일)', roastedBox),
-      field(kind === 'me' ? '섞은 날' : '개봉일', dateStepper({ value: bean.openedOn, onChange: (v) => (bean.openedOn = v) })),
-      existing ? field('상태', statusBox) : null,
+      '봉투',
+      h('div', { class: 'hint' }, kind === 'me' ? '미리 섞어 담아 둔 봉투입니다. 무게는 섞은 원두에서 셉니다.' : '같은 원두를 여러 봉 샀으면 봉투를 더하세요. 봉투마다 무게·제조일·보관 상태를 적고, 남은 양은 봉투마다 셉니다.'),
+      bagsBox,
     ),
     measures.length ? section('분쇄 측정', h('div', { class: 'hint' }, '이 원두로 잰 측정입니다(원두마다 같은 클릭에서도 분쇄가 달라 원두별로 모읍니다).'), ...measures.map((m) => measureListItem(m))) : null,
     section(null, field('메모', h('textarea', { rows: 2, value: bean.memo ?? '', onInput: (e) => (bean.memo = e.target.value) }))),
@@ -662,8 +694,8 @@ export function blendFormScreen(id) {
 
   function drawParts() {
     pctSpans.length = 0;
-    // 다 쓴 원두는 이미 고른 것만 보인다. 미리 섞은 블렌드도 원두로 고를 수 있다(병에서 덜어 섞는 경우).
-    const options = (p) => store.list('beans').filter((b) => b.status !== 'consumed' || b.id === p.beanId).sort((a, b) => a.name.localeCompare(b.name, 'ko'));
+    // 봉투가 모두 소비된 원두는 이미 고른 것만 보인다. 미리 섞은 블렌드도 원두로 고를 수 있다(병에서 덜어 섞는 경우).
+    const options = (p) => store.list('beans').filter((b) => !beanStock(b, [], [], store.list('bags')).consumed || b.id === p.beanId).sort((a, b) => a.name.localeCompare(b.name, 'ko'));
     fill(
       partsBox,
       ...t.parts.map((p, i) => {
@@ -729,6 +761,126 @@ export function blendFormScreen(id) {
     section(null, field('이름 *', nameBox), field('섞는 원두와 비율', partsBox, '예: 2 : 1 이면 원두 18g 을 12g · 6g 으로 나눕니다.')),
     section(null, field('메모', h('textarea', { rows: 2, value: t.memo ?? '', onInput: (e) => (t.memo = e.target.value) }))),
     h('button', { class: 'primary big wide', onClick: save }, '저장'),
+    // 비활성화(9/27): 저장된 템플릿의 상태만 바꾼다(고치던 칸은 저장하지 않는다) — 추출 준비 목록에서 빠지고, 섞은 기록은 그대로
+    existing
+      ? h('button', {
+          type: 'button',
+          class: 'wide',
+          onClick: () => {
+            const cur = store.get('blends', t.id);
+            if (!cur) return;
+            const on = isActive(cur);
+            store.put('blends', { ...cur, inactive: on ? inactiveMark({}) : null });
+            logEvent('gear.inactive', { col: 'blends', id: cur.id, name: cur.name, on, via: 'form' });
+            toast(on ? '비활성화했습니다. 추출 준비 목록에서 빠집니다.' : '다시 활성화했습니다.');
+            if (on) back(null);
+            else location.hash = '#/beans';
+          },
+        }, isActive(existing) ? '비활성화(추출 준비 목록에서 빼기)' : '다시 활성화')
+      : null,
     existing ? h('button', { type: 'button', class: 'wide quiet', onClick: remove }, '템플릿 지우기') : null,
   );
 }
+
+// AI 로 여러 원두 한꺼번에 등록(9/26 사용자 요청 — 로스터리만 같은 원두 여럿, 주문 내역·봉투 여러 장 캡처).
+// 답(nextbrew-bean 의 beans 목록)을 원두마다 검사해 고른 것만 등록한다. 이미 있는 원두(같은 로스터리·같은 이름)는 새로 만들지 않고 봉투만 더한다(B안).
+// 새로 산 봉투는 「보관 중(실온)」(밀봉)으로 들어온다 — 뜯은 봉투는 원두 화면에서 「사용 중」으로. 무게·개수를 모르면 봉투 하나.
+const sameKey = (s) => (s ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
+export function beanAiImportScreen() {
+  const box = h('div', { class: 'stack' });
+  const paste = h('textarea', { rows: 4, placeholder: 'AI 답(JSON)을 여기에 붙여 넣기' });
+  const file = h('input', { type: 'file', accept: 'application/json,.json,.txt,text/plain', class: 'hidden' });
+  async function load(via) {
+    let raw;
+    let fixes = [];
+    try {
+      const text = via === 'file' ? await file.files[0].text() : paste.value;
+      file.value = '';
+      ({ raw, fixes } = readBeanText(text));
+    } catch (e) {
+      logEvent('bean.aiBulkFail', { stage: 'read', via, message: e.message });
+      return fill(box, h('div', { class: 'notice error' }, e.message));
+    }
+    const { items, warnings } = validateBeanList(raw);
+    const beans = store.list('beans');
+    const plans = items.map((r, i) => {
+      if (r.errors.length || !r.value) return { i, errors: r.errors };
+      const v = r.value;
+      const b = createBean({ nameAuto: true });
+      const has = (k) => (k === 'roast' ? v.roast != null || v.roastLevel != null : v[k === 'roasterProfile' ? 'profile' : k] != null && !(Array.isArray(v[k]) && !v[k].length));
+      applyBeanPatch(b, v, BEAN_FIELDS.map(([k]) => k).filter((k) => !['roastedOn', 'bags'].includes(k) && has(k)));
+      delete b.roastedOn;
+      delete b.bags;
+      b.name = (blendKind(b) === 'single' ? beanAutoName(b) : blendAutoName(b)) || `${v.roaster ?? '원두'} ${i + 1}`;
+      const same = beans.find((x) => sameKey(x.name) === sameKey(b.name) && sameKey(x.roaster) === sameKey(b.roaster)) ?? null;
+      const bagList = (v.bags.length ? v.bags : [{ amount: null, unit: 'g', count: 1, roastedOn: v.roastedOn }]).flatMap((g) => Array.from({ length: g.count }, () => g));
+      return { i, v, bean: b, same, bagList, warnings: r.warnings };
+    });
+    const ok = plans.filter((x) => x.bean);
+    const picked = new Set(ok.map((x) => x.i));
+    fill(
+      box,
+      [...fixes, ...warnings].length ? h('div', { class: 'notice' }, '고쳐 읽은 곳', h('ul', null, ...[...fixes, ...warnings].map((x) => h('li', null, x)))) : null,
+      ...plans.map((x) => {
+        if (!x.bean) return h('div', { class: 'notice error' }, `원두 ${x.i + 1}: 확인이 필요합니다`, h('ul', null, ...x.errors.map((m) => h('li', null, m))));
+        const cb = h('input', { type: 'checkbox', checked: true });
+        cb.addEventListener('change', () => (cb.checked ? picked.add(x.i) : picked.delete(x.i)));
+        return h('label', { class: 'list-row pick-row' }, cb, h('div', { class: 'grow' },
+          h('div', null, x.bean.name),
+          h('div', { class: 'hint' }, [x.bean.roaster, x.same ? '이미 있는 원두 — 봉투만 더함' : '새 원두', `봉투 ${x.bagList.length}개${x.v.bags.length ? ` (${bagsText(x.v.bags)})` : ''}`].filter(Boolean).join(' · ')),
+          x.v.uncertain.length ? h('div', { class: 'hint' }, `AI 가 자신 없다고 한 칸: ${x.v.uncertain.join(' / ')}`) : null));
+      }),
+      ok.length
+        ? h('button', {
+            type: 'button',
+            class: 'primary wide',
+            onClick: () => {
+              let newBeans = 0;
+              let addedBags = 0;
+              for (const x of ok.filter((q) => picked.has(q.i))) {
+                const target = x.same ?? x.bean;
+                if (!x.same) {
+                  store.put('beans', x.bean);
+                  newBeans += 1;
+                }
+                for (const g of x.bagList) {
+                  store.put('bags', createBag({ beanId: target.id, state: 'stored', purchased: g.amount != null ? { amount: g.amount, unit: g.unit } : null, roastedOn: g.roastedOn ?? null }));
+                  addedBags += 1;
+                }
+              }
+              logEvent('bean.aiBulk', { via, answered: items.length, picked: picked.size, newBeans, addedBags, failed: plans.length - ok.length });
+              toast(`원두 ${newBeans}개를 새로 등록하고 봉투 ${addedBags}개를 넣었습니다.`);
+              location.hash = '#/beans';
+            },
+          }, '고른 원두 등록')
+        : null,
+    );
+  }
+  file.addEventListener('change', () => file.files[0] && load('file'));
+  return h(
+    'div',
+    { class: 'screen' },
+    h('h1', null, 'AI 로 여러 원두 등록'),
+    section(
+      null,
+      h('ol', { class: 'guide' },
+        h('li', null, '[프롬프트 복사]를 누르고, AI 앱에 주문 내역·봉투 사진(여러 장 가능)과 함께 붙여 넣어 보냅니다.'),
+        h('li', null, 'AI 답(JSON)을 아래에 붙여 넣고 [확인하기] → 등록할 원두를 고르고 [고른 원두 등록].'),
+        h('li', null, '이미 있는 원두(같은 로스터리·같은 이름)는 새로 만들지 않고 봉투만 더합니다. 새 봉투는 「보관 중(실온)」으로 들어옵니다.')),
+      h('button', {
+        type: 'button',
+        class: 'wide',
+        onClick: async () => {
+          const ok = await copyText(beanPrompt());
+          logEvent('bean.aiPromptCopy', { beanId: null, ok, via: 'bulk' });
+          toast(ok ? '프롬프트를 복사했습니다. 캡처와 함께 AI 앱에 보내 주세요.' : '복사하지 못했습니다.');
+        },
+      }, '프롬프트 복사'),
+      paste,
+      h('div', { class: 'row wrap' }, h('button', { type: 'button', onClick: () => load('paste') }, '확인하기'), h('button', { type: 'button', onClick: () => file.click() }, '파일에서 불러오기'), file),
+      box,
+    ),
+    h('a', { class: 'button wide', href: '#/beans' }, '원두 목록으로'),
+  );
+}
+

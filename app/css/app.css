@@ -419,7 +419,7 @@ button:active:not(:disabled), .button:active, .chip:active, .list-row:active, .s
 .pick-row input { width: 22px; height: 22px; flex: none; accent-color: var(--accent); }
 .pick-row .grow { flex: 1; }
 .pick-row.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
-.select-bar { position: sticky; bottom: calc(53px + env(safe-area-inset-bottom)); display: grid; grid-template-columns: 1fr 2fr; gap: var(--sp-2); padding: var(--sp-2) 0; background: var(--bg); }
+.select-bar { position: sticky; bottom: calc(53px + env(safe-area-inset-bottom)); display: grid; grid-template-columns: 1fr 1.3fr 1fr 1.3fr; gap: var(--sp-2); padding: var(--sp-2) 0; background: var(--bg); } /* 9/27: 취소 · 비활성화 · 지우기 · 공유 */
 body.hide-subs .sub-hint { display: none; }
 /* 숫자 슬라이더(9/26): 양 끝이 min·max — 눈금 글은 그 값의 손잡이 가운데에 */
 input.scale.flat { margin: 0; }
@@ -458,3 +458,16 @@ details.ai-bean > summary { font-weight: 700; cursor: pointer; }
 /* 블렌드(9/26): 구성 한 줄 = 칸 안의 상자(그라인더 줄과 같은 모양) · 준비 화면의 원두별 무게 줄 */
 .blend-row { display: flex; flex-direction: column; gap: var(--sp-2); padding: var(--pad-box); background: var(--card); border: 1px solid var(--line); border-radius: 10px; }
 .blend-parts { display: flex; flex-direction: column; gap: var(--sp-1); margin-top: var(--sp-2); }
+/* 드리퍼 지우기 경고(9/26): 함께 지울 기록 목록 — 팝업 안에서 스크롤 */
+.delete-list { max-height: 30dvh; padding-left: var(--sp-4); margin: 0; }
+/* 필터·붓는 방법 설명(9/26): 고른 것에 따라 바뀌는 설명 묶음 */
+.guide-box { gap: var(--sp-1); }
+.guide-box:empty { display: none; }
+/* 원두 봉투(9/26 B안): 원두 화면의 봉투마다 상자 · 모두 소비된 봉투는 흐리게 */
+.bag-box { display: flex; flex-direction: column; gap: var(--sp-2); padding: var(--pad-box); background: var(--card); border: 1px solid var(--line); border-radius: 10px; }
+.bag-box.consumed > :not(.chips):not(.row-line) { opacity: 0.6; }
+/* 소비된 원두 칸(9/26 사용자 요청): 칸·원두마다 상자는 그대로, 글자만 한 단계 옅게(검정 → 회색) — 누를 수는 있다 */
+.consumed-list h2, .consumed-list .list-row, .inactive-list h2, .inactive-list .list-row { color: var(--muted); }
+.consumed-list .list-row .hint, .inactive-list .list-row .hint { opacity: 0.75; }
+/* 비활성 칸의 입력 줄(그라인더·서버) · 비활성 템플릿 접힘 · 분쇄 측정(9/27) */
+.inactive-list .grinder-row > :not(.row), .measure-item.off > summary, .sub-details.off .list-row { color: var(--muted); }

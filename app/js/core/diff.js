@@ -4,7 +4,7 @@
 // - 시간은 ±2초 이내면 사람 손의 편차로 보고 «다름»으로 치지 않는다.
 // - 직접 적은 글(메모)은 비교하지 않고 각 기록 화면에서 모두 보여 준다(보고서 결정).
 
-import { n2, grindActual, formatGrind, formatSec, formatDelta, netServerWeight, dilutionView, timerOf, TIME_TOLERANCE_SEC, SURVEY_ITEMS, INTENSITY_WORDS, LIKING_WORDS } from './schema.js';
+import { isActive, n2, grindActual, formatGrind, formatSec, formatDelta, netServerWeight, dilutionView, timerOf, TIME_TOLERANCE_SEC, SURVEY_ITEMS, INTENSITY_WORDS, LIKING_WORDS } from './schema.js';
 import { WORDS, endStateLabel } from './words.js';
 import { brewBeanLabel } from './blend.js';
 
@@ -16,8 +16,9 @@ export function beanKey(b) {
 }
 
 export function findPrevious(brews, current) {
+  // 비활성 기록(9/27)은 비교 상대로 고르지 않는다
   const earlier = brews
-    .filter((b) => b.id !== current.id && b.timer?.startedAt < current.timer.startedAt)
+    .filter((b) => b.id !== current.id && isActive(b) && b.timer?.startedAt < current.timer.startedAt)
     .sort((a, b) => b.timer.startedAt - a.timer.startedAt);
   const sameRecipe = earlier.find((b) => b.recipe.id === current.recipe.id) ?? null;
   const key = beanKey(current);

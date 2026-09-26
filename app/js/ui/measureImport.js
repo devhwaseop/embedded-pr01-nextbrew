@@ -12,7 +12,7 @@
 import { h, field, stepper, toast, fmtDateTime, pickOne } from './dom.js';
 import { measureFigure } from './charts.js';
 import { readMeasureCsv, clickToDial, sameMachine, measureWarnings, MEASURE_SOURCE, PHOTO_SOURCE } from '../core/grindMeasure.js';
-import { n2, createMeasurement } from '../core/schema.js';
+import { n2, createMeasurement, beanStock, BAG_STATES, isActive, inactiveMark } from '../core/schema.js';
 import { readMeasurePhoto, shrinkPhoto } from './measureOcr.js';
 import { store } from '../core/store.js';
 import { logEvent } from '../core/log.js';
@@ -62,13 +62,15 @@ export function measureView(m) {
 // ③ 어떤 원두의 측정인가(원두를 모를 때만): 목록은 팝업 안에서 스크롤. 측정 메모에 원두 이름의 낱말이 들어 있으면 위로 올리고 표시한다.
 async function pickBean(memo) {
   const all = store.list('beans');
+  const bags = store.list('bags');
+  const gone = new Set(all.filter((b) => beanStock(b, [], [], bags).consumed).map((b) => b.id)); // 봉투가 모두 소비된 원두(9/26 B안)
   const words = (b) => b.name.split(/\s+/).filter((w) => w.length >= 2);
   const hit = (b) => Boolean(memo) && words(b).some((w) => memo.includes(w));
-  const order = [...all].sort((a, b) => hit(b) - hit(a) || (a.status === 'consumed') - (b.status === 'consumed') || a.name.localeCompare(b.name, 'ko'));
+  const order = [...all].sort((a, b) => hit(b) - hit(a) || gone.has(a.id) - gone.has(b.id) || a.name.localeCompare(b.name, 'ko'));
   const r = await pickOne({
     title: '어떤 원두의 측정인가요?',
     hint: '원두마다 같은 클릭에서도 분쇄가 달라 원두별로 모읍니다.',
-    items: order.map((b) => ({ value: b, label: b.name, badge: hit(b) ? '메모와 비슷' : null, sub: [b.roaster, b.status === 'consumed' ? '소모' : null].filter(Boolean).join(' · '), inactive: b.status === 'consumed' })),
+    items: order.map((b) => ({ value: b, label: b.name, badge: hit(b) ? '메모와 비슷' : null, sub: [b.roaster, gone.has(b.id) ? BAG_STATES.consumed : null].filter(Boolean).join(' · '), inactive: gone.has(b.id) })),
     emptyText: '등록한 원두가 없습니다.',
     extra: [{ key: 'none', label: '원두 없이 넣기' }],
   });
@@ -100,6 +102,27 @@ export function measureImportButton({ grinder, bean = null, via, onDone, label =
       try {
         ocr = await readMeasurePhoto(f, { knownMachines: store.list('grinders').map((g) => g.name), onProgress: p.set });
         m = ocr.measurement;
+        p.close();
+        // 측정 사진이 아닌 것 같으면 묻는다(9/26 사용자 요청): 다른 사진 고르기 · 그래도 직접 적기 · 취소
+        if (!ocr.check.ok) {
+          const choice = await sheet({
+            title: '분쇄 측정 사진이 아닌 것 같아요',
+            body: [
+              h('ul', { class: 'hint' }, ...ocr.check.reasons.map((r) => h('li', null, r))),
+              h('p', { class: 'hint' }, '언스페셜티 분쇄도 측정의 결과 화면(평균 크기 µm·표준편차가 보이는 화면)을 캡처해 올려 주세요.'),
+              h('img', { class: 'measure-photo', src: photoUrl, alt: '올린 사진' }),
+            ],
+            actions: [{ key: 'retry', label: '다른 사진 고르기', primary: true }, { key: 'manual', label: '그래도 이 사진으로 직접 적기' }, { key: 'cancel', label: '취소' }],
+          });
+          logEvent('grind.photoRejected', { reasons: ocr.check.reasons, cards: ocr.raw.cards, values: ocr.check.values, choice: choice ?? 'cancel', fileName: f.name, via });
+          if (choice !== 'manual') {
+            URL.revokeObjectURL(photoUrl);
+            if (choice === 'retry') input.click();
+            return;
+          }
+          ocr = null; // 읽은 값은 믿지 않고 빈 칸에서 사진을 보며 적는다
+          m = { source: PHOTO_SOURCE, fileName: f.name, machine: null, click: null, memo: null, meanUm: null, accuracyUm: null, sdUm: null, meanSource: 'photo', sdSource: 'photo' };
+        }
       } catch (e) {
         // 엔진을 못 받았거나(오프라인) 읽기에 실패 — 빈 칸으로 열어 사진을 보며 직접 적게 한다
         logEvent('grind.measureImportFail', { kind, stage: 'ocr', message: String(e?.message ?? e), fileName: f.name, via });
@@ -230,5 +253,31 @@ export function measureListItem(m, { showBean = false, showGrinder = true } = {}
     `평균 ${n2(m.meanUm ?? '—')}µm`,
     m.importedAt ? fmtDateTime(Date.parse(m.importedAt)) : null,
   ].filter(Boolean).join(' · ');
-  return h('details', { class: 'sub-details measure-item' }, h('summary', null, head), h('div', { class: 'hint' }, measureSummary(m)), measureView(m));
+  // 비활성화(9/27 사용자 결정 — 측정에는 지우기가 없고, 실수로 지우는 대신 쓰는 차선책): 추출 준비의 「이 원두 측정」 안내에서만 빠진다.
+  // 원두 화면에서 고치던 칸을 잃지 않게 화면 전체를 다시 그리지 않고 이 줄만 바꿔 그린다.
+  const off = !isActive(m);
+  const el = h(
+    'details',
+    { class: `sub-details measure-item${off ? ' off' : ''}` },
+    h('summary', null, off ? `(비활성) ${head}` : head),
+    h('div', { class: 'hint' }, measureSummary(m)),
+    measureView(m),
+    h('div', { class: 'row-line' },
+      h('span', { class: 'hint' }, off ? '추출 준비의 「이 원두 측정」 안내에 뜨지 않습니다.' : ''),
+      h('button', {
+        type: 'button',
+        class: 'inline-btn quiet',
+        onClick: () => {
+          const cur = store.get('measurements', m.id);
+          if (!cur) return;
+          const next = store.put('measurements', { ...cur, inactive: isActive(cur) ? inactiveMark({}) : null });
+          logEvent('gear.inactive', { col: 'measurements', id: cur.id, name: null, on: isActive(cur), via: showBean ? 'grinder' : 'bean' });
+          toast(isActive(next) ? '다시 활성화했습니다.' : '비활성화했습니다.');
+          const again = measureListItem(next, { showBean, showGrinder });
+          again.open = true;
+          el.replaceWith(again);
+        },
+      }, off ? '다시 활성화' : '비활성화')),
+  );
+  return el;
 }

@@ -23,6 +23,7 @@ export function createBlend(fields = {}, now = Date.now()) {
     nameAuto: true, // 이름 = 섞는 원두 이름을 « + »로 이은 것. false = 직접 적은 이름
     parts: [], // [{ beanId, name(원두를 지웠을 때 남는 마지막 이름), ratio(비율 — 합이 100 이 아니어도 된다) }]
     memo: '',
+    inactive: null, // 9/27 비활성화 { at } — 추출 준비의 원두 목록에서 빠진다(core/schema.js isActive)
     ...fields,
     updatedAt: new Date(now).toISOString(),
   };

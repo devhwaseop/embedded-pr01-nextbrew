@@ -11,7 +11,7 @@
 // 설문 값: 강도 level 1~5 = INTENSITY_WORDS(없음·약함·보통·강함·매우 강함), 선택 안 함 = null.
 // 부호: extraction 음수 = 과소추출(더 추출해야 함), 양수 = 과다추출. strength 양수 = 진함, 음수 = 연함.
 
-import { n2 } from './schema.js';
+import { n2, isActive } from './schema.js';
 
 export const COMPASS_STEP = { grindUm: 30, doseG: 0.5 };
 const MAX_EXTRACTION = 3;
@@ -114,6 +114,7 @@ export function adviseNext(compass, { umPerClick = null } = {}) {
 // 영점 반영값 = 그라인더 표시값 + 그때의 영점 — 영점을 바꿔도 같은 위치끼리 비교되게. 서로 다른 클릭이 둘 이상이어야 한다.
 export function estimateUmPerClick(brews, grinderId) {
   const pts = brews
+    .filter(isActive) // 비활성 기록(9/27 — 잘못 적은 µm 등)은 추정에 쓰지 않는다
     .map((b) => b.conditions?.grind)
     .filter((g) => g && g.grinderId === grinderId && g.dial != null && g.um != null)
     .map((g) => [g.dial + (g.zeroOffset || 0), g.um]);
@@ -138,6 +139,6 @@ export function umPerClickFor(grinder, brews) {
 // 준비 화면용: 같은 레시피(원두를 골랐으면 같은 원두까지)의 가장 최근 «설문한» 기록
 export function lastSurveyed(brews, { recipeId, beanId = null }) {
   return brews
-    .filter((b) => b.survey && b.recipe.id === recipeId && (!beanId || (b.bean?.id ?? b.bean?.blendId) === beanId))
+    .filter((b) => b.survey && isActive(b) && b.recipe.id === recipeId && (!beanId || (b.bean?.id ?? b.bean?.blendId) === beanId))
     .sort((a, b) => b.timer.startedAt - a.timer.startedAt)[0] ?? null;
 }

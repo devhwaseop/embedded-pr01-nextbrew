@@ -218,3 +218,18 @@ export function snapMachine(name, known = []) {
   }
   return best ? { name: best.k, snapped: best.k !== name } : { name, snapped: false };
 }
+
+// 측정 사진이 맞는지(9/26 사용자 요청 — 잘못 올린 사진을 거른다): 언스페셜티 결과 화면의 특징인 µm 단위가 값 카드에 있고
+// 평균 크기나 클릭 값을 하나라도 읽었어야 «측정 사진»으로 본다. 아니면 까닭을 들고 가져오기 화면이 묻는다(막지는 않는다 —
+// 글자 인식이 µm 를 놓칠 수도 있어 [그래도 직접 적기]를 남긴다). 5장 실측에서 맞는 사진은 모두 통과(9/26).
+export function photoCheck({ cards, headerText, statsText, measurement }) {
+  const unit = /[µμu]m/.test(statsText);
+  const words = /평균|편차|click/i.test(`${headerText}\n${statsText}`);
+  const values = [measurement.meanUm, measurement.click].filter((v) => v != null).length;
+  const reasons = [];
+  if (!cards) reasons.push('결과 카드(글 상자)를 찾지 못했습니다');
+  if (!unit) reasons.push('µm 단위를 찾지 못했습니다');
+  if (!words) reasons.push('「평균」·「편차」·「Click」 같은 글자를 찾지 못했습니다');
+  if (!values) reasons.push('평균 크기·클릭 값을 읽지 못했습니다');
+  return { ok: unit && values > 0, unit, words, values, reasons };
+}

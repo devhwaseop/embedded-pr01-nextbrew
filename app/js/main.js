@@ -10,7 +10,7 @@ import { prepScreen, timerScreen, resultScreen } from './ui/screens/brew.js';
 import { surveyScreen } from './ui/screens/survey.js';
 import { homeScreen, historyScreen, detailScreen } from './ui/screens/records.js';
 import { shareScreen } from './ui/screens/share.js';
-import { beansScreen, beanFormScreen, blendFormScreen } from './ui/screens/beans.js';
+import { beansScreen, beanFormScreen, blendFormScreen, beanAiImportScreen } from './ui/screens/beans.js';
 import { settingsScreen, applyDisplaySettings } from './ui/screens/settings.js';
 import { recipesScreen } from './ui/screens/recipes.js';
 import { grindersScreen, serversScreen, drippersScreen, dripperFormScreen } from './ui/screens/gear.js';
@@ -28,6 +28,7 @@ const ROUTES = [
   [/^#\/share\/selected$/, () => shareScreen('selected')], // 기록 목록에서 고른 여러 건(9/26)
   [/^#\/history$/, historyScreen],
   [/^#\/beans$/, beansScreen],
+  [/^#\/beans\/ai$/, beanAiImportScreen], // 9/26 AI 로 여러 원두 한꺼번에 등록
   [/^#\/bean\/([^/]+)$/, beanFormScreen],
   [/^#\/blend\/([^/]+)$/, blendFormScreen], // 9/26 블렌드 템플릿
   [/^#\/settings$/, settingsScreen],
@@ -60,7 +61,7 @@ function tabIndexOf(hash) {
 // 탭 막대에서 켤 탭: 탭 첫 화면 + 원두 등록·수정 화면(원두 탭)
 function navIndexOf(hash) {
   const i = tabIndexOf(hash);
-  return i >= 0 ? i : hash.startsWith('#/bean/') || hash.startsWith('#/blend/') || hash.startsWith('#/dripper/') ? 2 : -1;
+  return i >= 0 ? i : hash.startsWith('#/bean/') || hash.startsWith('#/beans/') || hash.startsWith('#/blend/') || hash.startsWith('#/dripper/') ? 2 : -1;
 }
 
 // 화면 전환 두 가지(9/25 사용자 결정 — 시각 요소). View Transitions API(크롬 111·Safari 18·Firefox 144 이상)로, 없으면 그냥 바뀐다.
@@ -112,7 +113,9 @@ function moveInd(pos, ms = 0) {
 }
 function nav(current, fromIdx = -1) {
   const on = navIndexOf(current);
-  const start = fromIdx >= 0 && on >= 0 ? fromIdx : on;
+  // 동작 줄이기(9/26 사용자 보고 — 아이폰에서 막대만 한 박자 늦게 따라옴): 미끄러지는 단계를 건너뛰므로 처음부터 새 탭 자리에 그린다.
+  // 전에는 이전 탭 자리에 그린 채 이동만 건너뛰어, 다음 탭을 누를 때까지 막대가 옛 자리에 남았다.
+  const start = fromIdx >= 0 && on >= 0 && !reducedMotion() ? fromIdx : on;
   navInd = h('span', { class: `nav-ind${on < 0 ? ' hidden' : ''}`, 'aria-hidden': 'true', style: `width:${100 / NAV.length}%;transform:translateX(${Math.max(0, start) * 100}%)` });
   if (on >= 0 && start !== on && !reducedMotion()) {
     const ms = SLIDE_MS[Math.abs(on - start)] ?? 400;

@@ -39,6 +39,8 @@ const SHELL = [
   './js/core/recipeBook.js',
   './js/data/presets.js',
   './js/data/drippers.js',
+  './js/data/filters.js',
+  './js/data/pourMethods.js',
   './js/platform/firebase.js',
   './js/platform/wakelock.js',
   './js/ui/dom.js',

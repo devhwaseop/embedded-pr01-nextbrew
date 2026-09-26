@@ -161,8 +161,29 @@ export function profileLine(p) {
 export const END_STATES = ['drained', 'cutoff'];
 // AI 공유 파일 형식. 기본값은 설정에서 고른다(처음 값 = md: AI에게 묻는 용도가 기본이라서).
 export const SHARE_FORMATS = ['md', 'json'];
-// AI 공유에 담을 기록: with = 비교 기록 함께(처음 기본), single = 이 기록만
+// AI 공유에 담을 기록: with = 비교 기록 함께(처음 기본), single = 단일 기록만
 export const SHARE_SCOPES = ['with', 'single'];
+
+// ── 비활성화(9/27 사용자 결정) ────────────────────────────────
+// 지우지 않고 목록·비교에서만 뺀다. inactive = null(활성) | { at, reason?, note? }.
+// 대상: 추출 기록(사유를 고르거나 적는다) · 드리퍼 · 그라인더 · 서버 · 분쇄 측정 · 블렌드 템플릿.
+// 원두는 봉투 「모두 소비됨」이, AI 제안은 [맞추기] 단추가 같은 역할을 해서 두지 않는다. 레시피는 순서 바꾸기로 대신한다.
+// 비활성 기록도 원두 남은 양에는 그대로 센다(실제로 쓴 원두라서).
+export const INACTIVE_REASONS = { failed: '실패한 추출', test: '시험 추출', wrongEntry: '잘못 적은 기록' };
+export const isActive = (doc) => !doc?.inactive;
+export function inactiveMark({ reason = null, note = '' } = {}, now = Date.now()) {
+  return { at: new Date(now).toISOString(), reason: reason && INACTIVE_REASONS[reason] ? reason : null, note: (note ?? '').trim() };
+}
+// 「시험 추출 · 물이 한쪽으로 쏠림」 — 사유가 없으면 빈 글
+export function inactiveLine(doc) {
+  const x = doc?.inactive;
+  if (!x) return '';
+  return [x.reason ? INACTIVE_REASONS[x.reason] : null, x.note || null].filter(Boolean).join(' · ');
+}
+// 고르는 목록: 활성인 것 + 지금 골라 둔 것(비활성이어도 — 이미 고른 것을 몰래 바꾸지 않게)
+export function activeChoices(list, keepId = null) {
+  return (list ?? []).filter((x) => isActive(x) || (keepId && x.id === keepId));
+}
 
 // ── 기록(brew) ────────────────────────────────────────────
 // 추출 타이머 부분(timer)은 저장한 뒤 바꾸지 않는다. 결과 보정(result)과 설문(survey)만 고친다.
@@ -178,7 +199,8 @@ export function createBrew({ id = null, recipe, plan, prep, timer, now = Date.no
       snapshot: structuredClone(recipe), // 레시피를 나중에 고쳐도 이 기록은 그때 그대로
     },
     // 블렌드 템플릿으로 섞었으면(9/26) blendId·parts[{ id, name, ratio, g }]가 붙는다(core/blend.js)
-    bean: prep.bean ? { id: prep.bean.id ?? null, name: prep.bean.name, ...(prep.bean.blendId ? { blendId: prep.bean.blendId, parts: prep.bean.parts } : {}) } : null,
+    // 봉투(9/26 B안): bagId(가리킴) + age(그때 일수 { roast, room, frozen, open, estimated } — 그때 값)
+    bean: prep.bean ? { id: prep.bean.id ?? null, name: prep.bean.name, ...(prep.bean.blendId ? { blendId: prep.bean.blendId, parts: prep.bean.parts } : {}), ...(prep.bean.bagId ? { bagId: prep.bean.bagId, age: prep.bean.age ?? null } : {}) } : null,
     conditions: {
       style: prep.style, // 'iced' | 'hot'
       doseG: plan.doseG,
@@ -192,6 +214,7 @@ export function createBrew({ id = null, recipe, plan, prep, timer, now = Date.no
       filter: prep.filter,
       rinsed: prep.rinsed,
       pourMethod: prep.pourMethod,
+      grindBeanState: prep.grindBeanState ?? null, // 갈 때 원두 상태 frozen|room(9/26 — 냉동한 적이 있는 봉투일 때 사용자가 고름)
     },
     timer, // core/timer.js summarize() 결과
     result: {
@@ -206,6 +229,7 @@ export function createBrew({ id = null, recipe, plan, prep, timer, now = Date.no
     },
     survey: null,
     followedAdvice: prep.followedAdvice ?? null, // 9/26 이 추출이 따른 AI 제안(core/adviceImport.js followRecord) — 없으면 null
+    inactive: null, // 9/27 비활성화 { at, reason(INACTIVE_REASONS 키|null), note } — 비교·제안에서 빠진다(isActive)
     updatedAt: new Date(now).toISOString(),
   };
 }
@@ -229,12 +253,7 @@ export function createBean(fields = {}, now = Date.now()) {
     notes: [], // 로스터리가 표기한 노트
     blend: null, // 9/26 블렌드 — null = 싱글 오리진, { by: 'roaster'|'me', parts } (core/blend.js)
     memo: '',
-    purchased: null, // 구매 무게 { amount, unit(BEAN_UNITS 키) } — 남은 원두 추정의 출발점
-    roastedOn: null, // 제조일(로스팅일) 'YYYY-MM-DD'
-    roastedOnFrom: null, // 제조일을 소비기한에서 거꾸로 셌으면 { bestBefore, months } — 화면에 «추정»으로 보인다
-    openedOn: null, // 개봉일 'YYYY-MM-DD'
-    status: 'active', // 'active' | 'consumed'(다 씀 — 목록에서 흐리게, 준비 화면 목록에서 뺀다)
-    consumedAt: null,
+    // 구매 무게·제조일·개봉일·상태는 봉투(createBag)에 둔다(9/26 B안 — 같은 원두를 여러 봉 산다)
     ...fields,
     updatedAt: new Date(now).toISOString(),
   };
@@ -258,31 +277,127 @@ export function purchasedGrams(b) {
   return round1(p.amount * BEAN_UNITS[p.unit].grams);
 }
 
-// 남은 원두 추정 = 구매 무게 − 이 원두로 남긴 기록들의 원두량 합. 기록 없이 쓴 원두·흘린 양은 모른다(추정).
-// 블렌드(9/26, core/blend.js): 템플릿으로 섞어 내린 기록은 그 기록에서 이 원두에 나눈 무게만 센다.
-// 미리 섞어 둔 블렌드(beans 에서 blend.by 'me')에 넣은 무게는 «섞음»으로 뺀다. 그 블렌드 자신의 양 = 섞은 무게 합.
+// ── 원두 봉투(9/26 사용자 결정 B안) ─────────────────────────────
+// 원두 = 제품 정보(이름·산지·가공·배전도·노트 …), 봉투 = 실제로 산 한 봉(무게·제조일·보관 상태·개봉일·얼린 날·꺼낸 날).
+// 같은 원두를 여러 봉 샀으면 봉투만 늘린다. 「소분」 항목은 따로 두지 않는다 — 봉투마다 무게를 적고 [이 봉투 복사해 추가](사용자 제안대로 간소화).
+// 남은 양은 봉투마다 센다: 구매 무게 − 이 봉투로 내린 기록의 원두량 − 이 봉투에서 덜어 섞은 무게(블렌드). 기록 없이 쓴 양·흘린 양은 모른다(추정).
 export const LOW_BEAN_G = 10; // 이 값 이하이면 «거의 다 씀» 알림(사용자 요청 9/25)
-export function beanStock(b, brews, beans = []) {
-  const mixedByMe = b.blend?.by === 'me' ? (b.blend.parts ?? []).reduce((a, p) => a + (Number(p.g) || 0), 0) : null;
-  const total = mixedByMe != null ? round1(mixedByMe) : purchasedGrams(b);
+export const BAG_STATES = { inUse: '사용 중', inUseFrozen: '사용 중(냉동)', stored: '보관 중(실온)', frozen: '보관 중(냉동)', consumed: '모두 소비됨' };
+export const BAG_PICK_ORDER = ['inUse', 'inUseFrozen', 'stored', 'frozen']; // 준비 화면이 봉투를 자동으로 고르는 순서(사용 중 → 보관 중)
+export const inFreezer = (bag) => bag?.state === 'frozen' || bag?.state === 'inUseFrozen';
+const opened = (state) => state === 'inUse' || state === 'inUseFrozen';
+
+export function createBag(fields = {}, now = Date.now()) {
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    id: fields.id ?? newId('bag', now),
+    beanId: null,
+    purchased: null, // 구매 무게 { amount, unit(BEAN_UNITS 키) } — 남은 양의 출발점
+    roastedOn: null, // 제조일(로스팅일) 'YYYY-MM-DD'
+    roastedOnFrom: null, // 소비기한에서 거꾸로 셌으면 { bestBefore, months } — 화면에 «추정»
+    state: 'stored', // BAG_STATES 키
+    openedOn: null, // 개봉일
+    freezes: [], // 냉동실에 있던 기간 [{ on, off }] — off = null 이면 아직 냉동실. 다시 얼리면 한 줄 더
+    consumedAt: null, // 모두 소비됨으로 바꾼 때
+    stateBefore: null, // 모두 소비됨 전 상태(되돌릴 때)
+    note: '',
+    ...fields,
+    updatedAt: new Date(now).toISOString(),
+  };
+}
+
+// 상태를 바꾸며 날짜를 맞춘다(봉투 객체를 바꾼다): 개봉 → 개봉일(비었으면), 냉동실에 넣음 → 얼린 날, 꺼냄 → 꺼낸 날,
+// 모두 소비됨 → 소비한 때와 전 상태. day = 'YYYY-MM-DD'(보통 오늘), nowIso = 소비한 때
+export function setBagState(bag, next, day, nowIso = new Date().toISOString()) {
+  const prev = bag.state;
+  if (!BAG_STATES[next] || next === prev) return bag;
+  if (next === 'consumed') return Object.assign(bag, { state: next, stateBefore: prev, consumedAt: nowIso });
+  const from = prev === 'consumed' ? bag.stateBefore ?? 'inUse' : prev;
+  if (prev === 'consumed') Object.assign(bag, { consumedAt: null, stateBefore: null });
+  if (opened(next) && !bag.openedOn) bag.openedOn = day;
+  const wasIn = inFreezer({ state: from });
+  const nowIn = inFreezer({ state: next });
+  bag.freezes = [...(bag.freezes ?? [])];
+  if (!wasIn && nowIn) bag.freezes.push({ on: day, off: null });
+  if (wasIn && !nowIn) {
+    const last = bag.freezes[bag.freezes.length - 1];
+    if (last && !last.off) bag.freezes[bag.freezes.length - 1] = { ...last, off: day };
+  }
+  bag.state = next;
+  return bag;
+}
+
+// 두 날('YYYY-MM-DD') 사이 날 수
+export function daysBetween(a, b) {
+  const x = parseDay(a);
+  const y = parseDay(b);
+  return x && y ? Math.round((y - x) / 86400000) : null;
+}
+const dayOf = (ms) => formatDay(new Date(ms));
+// 봉투 일수(9/26 사용자 결정 — 로스팅 후 일수를 실온·냉동으로 나눠 적는다, 환산 비율은 두지 않는다):
+// { roast(로스팅 후), frozen(냉동실에 있던 날), room(= roast − frozen), open(개봉 후), estimated(제조일을 소비기한에서 셈) }
+// 모두 소비됨이면 그때에서 멈춘다. at = 기준 시각(기록이면 그 추출 시각)
+export function bagDays(bag, at = Date.now()) {
+  if (!bag) return null;
+  const endMs = bag.state === 'consumed' && bag.consumedAt ? Math.min(Date.parse(bag.consumedAt), at) : at;
+  const end = dayOf(endMs);
+  const roast = bag.roastedOn ? daysBetween(bag.roastedOn, end) : null;
+  const frozen = (bag.freezes ?? []).reduce((sum, f) => {
+    if (!f.on || f.on > end) return sum;
+    const d = daysBetween(f.on, f.off && f.off < end ? f.off : end);
+    return sum + (d > 0 ? d : 0);
+  }, 0);
+  const open = bag.openedOn && bag.openedOn <= end ? daysBetween(bag.openedOn, end) : null;
+  return { roast: roast != null && roast >= 0 ? roast : null, frozen, room: roast != null && roast >= 0 ? Math.max(0, roast - frozen) : null, open, estimated: Boolean(bag.roastedOnFrom) };
+}
+
+export function bagStock(bag, brews, beans = []) {
+  const total = purchasedGrams(bag);
   let usedG = 0;
   let count = 0;
   for (const x of brews ?? []) {
-    if (x.bean?.id === b.id) {
+    if (x.bean?.bagId === bag.id) {
       usedG += Number(x.conditions?.doseG) || 0;
       count += 1;
     } else {
-      const part = x.bean?.parts?.find((p) => p.id === b.id);
+      const part = x.bean?.parts?.find((p) => p.bagId === bag.id);
       if (part) {
         usedG += Number(part.g) || 0;
         count += 1;
       }
     }
   }
-  const mixedG = round1((beans ?? []).filter((o) => o.id !== b.id && o.blend?.by === 'me').reduce((a, o) => a + (o.blend.parts ?? []).filter((p) => p.beanId === b.id).reduce((s, p) => s + (Number(p.g) || 0), 0), 0));
+  // 이 봉투에서 덜어 미리 섞은 블렌드(원두 등록의 「내가 섞은 블렌드」)
+  const mixedG = round1((beans ?? []).filter((o) => o.blend?.by === 'me').reduce((a, o) => a + (o.blend.parts ?? []).filter((p) => p.bagId === bag.id).reduce((s2, p) => s2 + (Number(p.g) || 0), 0), 0));
   usedG = round1(usedG);
   const remainingG = total == null ? null : round1(total - usedG - mixedG);
-  return { totalG: total, usedG, brews: count, mixedG, remainingG, low: remainingG != null && remainingG <= LOW_BEAN_G && b.status !== 'consumed' };
+  return { totalG: total, usedG, brews: count, mixedG, remainingG, low: remainingG != null && remainingG <= LOW_BEAN_G && bag.state !== 'consumed' };
+}
+
+// 이 원두의 봉투들(자동으로 고르는 순서 → 같은 상태면 제조일이 이른 것 먼저)
+export function beanBags(beanId, bags) {
+  const rank = (g) => (g.state === 'consumed' ? 9 : BAG_PICK_ORDER.indexOf(g.state));
+  return (bags ?? []).filter((g) => g.beanId === beanId).sort((a, b) => rank(a) - rank(b) || String(a.roastedOn ?? '').localeCompare(String(b.roastedOn ?? '')));
+}
+// 준비 화면이 자동으로 고를 봉투: 사용 중 → 사용 중(냉동) → 보관 중(실온) → 보관 중(냉동)
+export function activeBag(beanId, bags) {
+  return beanBags(beanId, bags).find((g) => g.state !== 'consumed') ?? null;
+}
+// 원두 전체: 봉투마다 남은 양 + 상태별 봉투 수. 봉투가 모두 «모두 소비됨»이면 consumed(소비된 원두 칸으로)
+export function beanStock(bean, brews, beans = [], bags = []) {
+  const mine = beanBags(bean.id, bags).map((g) => ({ bag: g, ...bagStock(g, brews, beans) }));
+  const live = mine.filter((e) => e.bag.state !== 'consumed');
+  const known = live.filter((e) => e.remainingG != null);
+  const counts = {};
+  for (const e of mine) counts[e.bag.state] = (counts[e.bag.state] ?? 0) + 1;
+  return {
+    bags: mine,
+    counts,
+    remainingG: known.length ? round1(known.reduce((a, e) => a + Math.max(0, e.remainingG), 0)) : null,
+    brews: mine.reduce((a, e) => a + e.brews, 0),
+    consumed: mine.length > 0 && !live.length,
+    low: live.some((e) => e.low),
+  };
 }
 
 // 날짜: 'YYYY-MM-DD' 를 그 나라 시간의 자정으로 읽는다(UTC 로 읽으면 하루가 밀린다)
@@ -394,9 +509,23 @@ export function createServer(fields = {}, now = Date.now()) {
     id: fields.id ?? newId('server', now),
     name: '',
     tareG: null,
+    inactive: null, // 9/27 비활성화 { at } — 결과 화면의 서버 목록에서 빠진다
     ...fields,
     updatedAt: new Date(now).toISOString(),
   };
+}
+
+// 서버 지우기(9/27 사용자 결정): 그 서버를 쓴 기록은 서버 ID 만 떼고 이름·자체 무게를 그대로 둔다 —
+// 「등록 없이 무게만 적기」로 적은 것과 같아져 결과 수정에서 고칠 수 있고, 등록 서버를 고쳐도 더는 따라가지 않는다.
+// → 바꾼 기록들(사본). 원본 기록은 건드리지 않는다.
+export function detachServer(brews, serverId) {
+  return (brews ?? [])
+    .filter((b) => serverId && b.result?.server?.id === serverId)
+    .map((b) => {
+      const c = structuredClone(b);
+      c.result.server = { ...c.result.server, id: null, fromServerId: serverId };
+      return c;
+    });
 }
 
 // 드리퍼(9/26 신설): 이름만. 기록은 ID 로 가리키고 이름은 등록값을 따른다(core/migrate.js syncRefs)
@@ -419,6 +548,7 @@ export function createDripper(fields = {}, now = Date.now()) {
     filter: null,
     note: '', // 특징·메모
     sources: [], // [{ kind(maker|seller|ai|user), label, url, checkedAt }]
+    inactive: null, // 9/27 비활성화 { at } — 추출 준비의 드리퍼 목록에서 빠진다
     ...fields,
     updatedAt: new Date(now).toISOString(),
   };
@@ -432,6 +562,7 @@ export function createMeasurement(fields = {}, now = Date.now()) {
     id: fields.id ?? newId('measure', now),
     beanId: null,
     grinderId: null,
+    inactive: null, // 9/27 비활성화 { at } — 추출 준비의 「이 원두 측정」 안내에서 빠진다(지우기 대신)
     ...fields,
     updatedAt: new Date(now).toISOString(),
   };
@@ -444,6 +575,7 @@ export function createGrinder(fields = {}, now = Date.now()) {
     name: '',
     zeroOffset: 0,
     umPerClick: null, // 한 클릭에 분쇄가 몇 µm 바뀌나(선택). 비우면 기록의 참고 µm 로 추정한다(core/compass.js)
+    inactive: null, // 9/27 비활성화 { at } — 추출 준비의 그라인더 목록에서 빠진다
     ...fields,
     updatedAt: new Date(now).toISOString(),
   };

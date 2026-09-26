@@ -9,7 +9,7 @@ import { beansSegment } from './beans.js';
 import { store } from '../../core/store.js';
 import { logEvent } from '../../core/log.js';
 import { PRESETS, findPreset } from '../../data/presets.js';
-import { userRecipes } from '../../core/recipeBook.js';
+import { userRecipes, allRecipes } from '../../core/recipeBook.js';
 import { recipePrompt, toImportFormat, readRecipeText, validateRecipeImport, blankRecipe } from '../../core/recipeImport.js';
 import { buildPlan, recipeTags, formatRatio } from '../../core/recipe.js';
 import { n2, formatSec } from '../../core/schema.js';
@@ -45,6 +45,8 @@ export function recipesScreen() {
   let editingId = null;
   let readFixes = []; // 읽으면서 고친 특수문자
   let parseError = null;
+  let ordering = false; // [순서 바꾸기] 중(9/27)
+  let moves = 0;
 
   const pasteBox = h('textarea', { rows: 5, placeholder: 'AI 답을 여기에 붙여 넣으세요. 앞뒤 설명 글이나 ```json 표시가 있어도 됩니다.' });
   const fileInput = h('input', {
@@ -261,20 +263,43 @@ export function recipesScreen() {
     draw();
   }
 
-  function recipeRow(r, mine) {
+  // 목록 순서 바꾸기(9/27 사용자 결정 — 레시피는 비활성화 대신 순서를 바꾼다. 프리셋도 옮길 수 있다).
+  // 순서는 설정 recipeOrder(ID 목록)에 둔다 — 계정 동기화를 따르고, 추출 준비의 레시피 목록도 이 순서다(core/recipeBook.js orderRecipes).
+  function move(i, dir) {
+    const ids = allRecipes().map((r) => r.id);
+    const j = i + dir;
+    if (j < 0 || j >= ids.length) return;
+    [ids[i], ids[j]] = [ids[j], ids[i]];
+    store.setSetting('recipeOrder', ids);
+    moves += 1;
+    draw();
+  }
+  function finishOrdering() {
+    if (moves) logEvent('recipe.reorder', { order: allRecipes().map((r) => r.id), moves });
+    ordering = false;
+    moves = 0;
+    draw();
+  }
+
+  function recipeRow(r, mine, i, count) {
     return h(
       'div',
       { class: 'recipe-row list-row' }, // 칸 안의 상자(9/26 — 기록·원두 목록과 같은 모양)
       h('div', null, h('div', null, r.name), tags(recipeTags(r))),
-      mine
-        ? h('div', { class: 'row' }, h('button', { type: 'button', onClick: () => startEdit(r) }, '수정'), h('button', { type: 'button', onClick: () => remove(r) }, '지우기'))
-        : h('span', { class: 'muted' }, '기본'),
+      ordering
+        ? h('div', { class: 'row' },
+            h('button', { type: 'button', disabled: i === 0, 'aria-label': `${r.name} 위로`, onClick: () => move(i, -1) }, '↑'),
+            h('button', { type: 'button', disabled: i === count - 1, 'aria-label': `${r.name} 아래로`, onClick: () => move(i, 1) }, '↓'))
+        : mine
+          ? h('div', { class: 'row' }, h('button', { type: 'button', onClick: () => startEdit(r) }, '수정'), h('button', { type: 'button', onClick: () => remove(r) }, '지우기'))
+          : h('span', { class: 'muted' }, '기본'),
     );
   }
 
   function draw() {
     editorEl = draft ? editor() : null;
     const mine = userRecipes();
+    const list = allRecipes();
     fill(
       root,
       beansSegment('recipes'),
@@ -297,7 +322,17 @@ export function recipesScreen() {
         h('button', { type: 'button', class: 'wide', onClick: startManual }, '직접 입력'),
       ),
       editorEl,
-      section('레시피 목록', ...PRESETS.map((r) => recipeRow(r, false)), ...mine.map((r) => recipeRow(r, true)), mine.length ? null : h('div', { class: 'hint' }, '아직 추가한 레시피가 없습니다.')),
+      section(
+        '레시피 목록',
+        ordering
+          ? h('div', { class: 'row-line' }, h('span', { class: 'hint' }, '↑·↓ 로 옮깁니다. 추출 준비의 레시피 목록도 이 순서가 됩니다.'), h('button', { type: 'button', class: 'primary', onClick: finishOrdering }, '다 했어요'))
+          : h('button', { type: 'button', class: 'wide', onClick: () => { ordering = true; draw(); } }, '순서 바꾸기'),
+        ...list.map((r, i) => recipeRow(r, !PRESETS.some((p) => p.id === r.id), i, list.length)),
+        mine.length ? null : h('div', { class: 'hint' }, '아직 추가한 레시피가 없습니다.'),
+        ordering && store.settings().recipeOrder?.length
+          ? h('button', { type: 'button', class: 'inline-btn quiet', onClick: () => { store.setSetting('recipeOrder', []); moves += 1; draw(); } }, '처음 순서로 되돌리기')
+          : null,
+      ),
       linkButton({ href: '#/prep', label: '추출 준비로' }),
     );
     if (draft) check();

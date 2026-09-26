@@ -4,7 +4,7 @@ import { SCHEMA_VERSION } from './schema.js';
 
 export const APP_NAME = 'NextBrew';
 
-export function buildExport({ brews, beans, grinders, servers = [], recipes = [], drippers = [], measurements = [], blends = [], logs = null, now = Date.now() }) {
+export function buildExport({ brews, beans, grinders, servers = [], recipes = [], drippers = [], measurements = [], blends = [], bags = [], logs = null, now = Date.now() }) {
   const out = {
     app: APP_NAME,
     schemaVersion: SCHEMA_VERSION,
@@ -17,6 +17,7 @@ export function buildExport({ brews, beans, grinders, servers = [], recipes = []
     drippers, // 9/26
     measurements, // 9/26 분쇄 측정(계정 저장이면 사진 dataURL 포함)
     blends, // 9/26 블렌드 템플릿(추출할 때 섞는 비율)
+    bags, // 9/26 원두 봉투(무게·제조일·보관 상태)
   };
   if (logs) out.logs = logs;
   return out;
@@ -41,6 +42,7 @@ export function parseImport(text) {
     drippers: Array.isArray(data.drippers) ? data.drippers : [], // 9/26 추가 — 옛 파일에는 없다(기록의 드리퍼 이름으로 불러올 때 만든다)
     measurements: Array.isArray(data.measurements) ? data.measurements : [], // 9/26 추가
     blends: Array.isArray(data.blends) ? data.blends : [], // 9/26 추가(블렌드 템플릿)
+    bags: Array.isArray(data.bags) ? data.bags : [], // 9/26 추가(원두 봉투) — 옛 파일은 불러올 때 원두에서 만든다
     logs: Array.isArray(data.logs) ? data.logs : [],
   };
 }

@@ -2,6 +2,8 @@
 // 산지 → 대표 노트의 표준 자료가 없어서다(docs/agent-notes/참고 출처 목록.md 「산지별 노트」).
 // 같은 나라 + 같은 가공 방식이면 먼저, 나라만 같으면 그다음 순서로, 자주 나온 노트부터 낸다.
 
+import { isActive } from './schema.js';
+
 export function suggestNotes(beans, { country, process, excludeId = null }, limit = 8) {
   const c = (country ?? '').trim();
   if (!c) return [];
@@ -23,7 +25,7 @@ export function suggestNotes(beans, { country, process, excludeId = null }, limi
 export function lastNotePerceptions(brews, current, notes) {
   const ref = (b) => b.bean?.id ?? b.bean?.blendId ?? null; // 블렌드 템플릿으로 섞은 기록은 같은 템플릿끼리(9/26)
   const earlier = brews
-    .filter((x) => x.id !== current.id && ref(current) && ref(x) === ref(current) && x.survey && x.timer.startedAt < current.timer.startedAt)
+    .filter((x) => x.id !== current.id && isActive(x) && ref(current) && ref(x) === ref(current) && x.survey && x.timer.startedAt < current.timer.startedAt)
     .sort((a, b) => b.timer.startedAt - a.timer.startedAt);
   const out = {};
   for (const n of notes) {

@@ -1,11 +1,11 @@
 // 홈 · 기록 목록 · 기록 상세 (AI 공유는 share.js)
 
-import { h, fill, section, fmtDateTime, term, toast, googleButton, modal, copyText } from '../dom.js';
+import { h, fill, section, inactiveSection, chips, fmtDateTime, term, toast, googleButton, modal, copyText } from '../dom.js';
 import { WORDS } from '../../core/words.js';
 import { store, loadActive, localOnlyCounts, copyAll, createLocalAdapter } from '../../core/store.js';
 import { logEvent } from '../../core/log.js';
-import { n2, formatSec, formatDelta, beanStock, timerOf, SURVEY_ITEMS, INTENSITY_WORDS, LIKING_WORDS } from '../../core/schema.js';
-import { lowBeanNotice } from './beans.js';
+import { n2, formatSec, formatDelta, timerOf, SURVEY_ITEMS, INTENSITY_WORDS, LIKING_WORDS, INACTIVE_REASONS, isActive, inactiveMark, inactiveLine } from '../../core/schema.js';
+import { lowBagNotices } from './beans.js';
 import { sideBySide } from '../../core/diff.js';
 import { firebaseEnabled, signIn } from '../../platform/firebase.js';
 import { timerTable, conditionsList, comparisonBlock, ratioChange } from './brew.js';
@@ -18,19 +18,70 @@ import { readAdviceText, validateAdvice, adviceResultPrompt, currentValues, foll
 // 기록 한 줄(9/26 사용자 요청): 왼쪽 = 「레시피 · 원두」와 날짜(사이를 조금 띄움), 오른쪽 = 걸린 시간과 설문 상태를 담은 작은 상자.
 // 오른쪽 상자는 두 줄 높이의 가운데에 두고 줄바꿈하지 않는다 — 제목이 길어도 「설문 완료」가 두 줄로 깨지지 않게 제목 쪽이 줄어든다.
 // 상태 글자는 「설문 완료·설문 대기」(9/26 사용자 요청 — 「노트」만 쓰면 맛의 노트인지 종이 노트인지 애매하다). 화면 이름은 「테이스팅 노트」 그대로.
+// 비활성 기록(9/27)은 설문 상태 대신 「비활성」, 날짜 뒤에 사유를 붙인다
 function brewRow(b) {
+  const off = !isActive(b);
   return h(
     'a',
     { class: 'list-row brew-row', href: `#/brew/${b.id}` },
-    h('div', { class: 'brew-row-main' }, h('div', null, `${b.recipe.name} · ${b.bean?.name ?? '원두 미입력'}`), h('div', { class: 'hint' }, fmtDateTime(b.timer.startedAt))),
-    h('div', { class: 'row-meta' }, h('span', null, formatSec(timerOf(b).totalSec)), h('span', { class: b.survey ? 'muted' : 'badge' }, b.survey ? '설문 완료' : '설문 대기')),
+    h('div', { class: 'brew-row-main' }, h('div', null, `${b.recipe.name} · ${b.bean?.name ?? '원두 미입력'}`), h('div', { class: 'hint' }, [fmtDateTime(b.timer.startedAt), off ? inactiveLine(b) || null : null].filter(Boolean).join(' · '))),
+    h('div', { class: 'row-meta' }, h('span', null, formatSec(timerOf(b).totalSec)), off ? h('span', { class: 'muted' }, '비활성') : h('span', { class: b.survey ? 'muted' : 'badge' }, b.survey ? '설문 완료' : '설문 대기')),
   );
 }
+
+// ── 추출 기록 비활성화·지우기(9/27 사용자 요청) ─────────────────
+// 비활성화 = 지우지 않고 비교·제안에서 뺀다(사유를 고르거나 적는다 — 비워도 된다). 지우기 = 기록을 없앤다(되돌릴 수 없음).
+// 둘 다 기록 목록의 고르기 모드와 기록 화면에서 한다. 로그(nb.logs)는 지우지 않는다 — 지운 기록의 요약을 brew.delete 에 남긴다.
+const INACTIVE_EFFECT = '지우지 않습니다. 지난 추출과 비교·다음 추출 제안·AI 공유의 비교 기록·클릭당 µm 추정에서 빠지고, 원두 남은 양에는 그대로 셉니다.';
+async function askInactive(count) {
+  let reason = null;
+  const note = h('input', { type: 'text', placeholder: '사유 직접 적기(선택)' });
+  const body = h(
+    'div',
+    { class: 'stack' },
+    h('div', null, INACTIVE_EFFECT),
+    h('div', { class: 'field-label' }, '사유 — 고르거나 적기(비워도 됩니다)'),
+    chips({ options: Object.values(INACTIVE_REASONS), selected: null, onChange: (v) => (reason = Object.keys(INACTIVE_REASONS).find((k) => INACTIVE_REASONS[k] === v) ?? null) }),
+    note,
+  );
+  const k = await modal({ title: count > 1 ? `기록 ${count}건을 비활성화할까요?` : '이 기록을 비활성화할까요?', body, actions: [{ key: 'no', label: '닫기' }, { key: 'yes', label: '비활성화', primary: true }] });
+  return k === 'yes' ? { reason, note: note.value } : null;
+}
+// on = true 면 비활성화(mark = askInactive 답), false 면 다시 활성화. 이미 그 상태인 기록은 건너뛴다.
+function setBrewsInactive(list, on, mark, via) {
+  const todo = list.filter((b) => isActive(b) === on);
+  const m = on ? inactiveMark(mark) : null;
+  for (const b of todo) store.put('brews', { ...b, inactive: m });
+  logEvent('brew.inactive', { ids: todo.map((b) => b.id), on, reason: m?.reason ?? null, note: m?.note ?? '', via, skipped: list.length - todo.length });
+  return todo.length;
+}
+async function deleteBrews(list, via) {
+  const line = (b) => `${fmtDateTime(b.timer.startedAt)} · ${b.recipe.name} · ${b.bean?.name ?? '원두 미입력'}`;
+  const body = h(
+    'div',
+    { class: 'stack' },
+    h('div', { class: 'notice warn' }, `지운 기록은 되돌릴 수 없습니다. 이 기록${list.length > 1 ? '들' : ''}에 쓴 원두는 남은 양으로 돌아갑니다. 비교에서만 빼려면 [비활성화]를 쓰세요.`),
+    h('ul', { class: 'pick-list delete-list' }, ...list.map((b) => h('li', null, line(b)))),
+  );
+  const k = await modal({ title: list.length > 1 ? `기록 ${list.length}건을 지울까요?` : '이 기록을 지울까요?', body, actions: [{ key: 'no', label: '닫기' }, { key: 'yes', label: '지우기', primary: true }] });
+  if (k !== 'yes') {
+    logEvent('brew.deleteCancel', { ids: list.map((b) => b.id), via });
+    return false;
+  }
+  for (const b of list) store.remove('brews', b.id);
+  logEvent('brew.delete', {
+    via,
+    deleted: list.map((b) => ({ id: b.id, startedAt: b.timer.startedAt, recipe: b.recipe.name, bean: b.bean?.name ?? null, beanId: b.bean?.id ?? null, bagId: b.bean?.bagId ?? null, doseG: b.conditions?.doseG ?? null, dripper: b.conditions?.dripper ?? null, survey: Boolean(b.survey), inactive: b.inactive ?? null })),
+  });
+  toast(`기록 ${list.length}건을 지웠습니다.`);
+  return true;
+}
+const rerender = () => window.dispatchEvent(new HashChangeEvent('hashchange'));
 
 // 계정 배너 한 칸(9/26 사용자 요청 — 다른 안내 칸처럼 두 줄): 「계정에 저장 중」(굵게) / 이메일
 const accountLine = (title, email) => h('div', { class: 'account-line' }, h('b', null, title), email ? h('div', null, email) : null);
 
-const LOCAL_WORDS = { brews: '추출', beans: '원두', grinders: '그라인더', servers: '서버', recipes: '레시피', drippers: '드리퍼', measurements: '분쇄 측정', blends: '블렌드 템플릿' };
+const LOCAL_WORDS = { brews: '추출', beans: '원두', grinders: '그라인더', servers: '서버', recipes: '레시피', drippers: '드리퍼', measurements: '분쇄 측정', blends: '블렌드 템플릿', bags: '원두 봉투' };
 
 async function moveLocalToAccount(btn) {
   btn.disabled = true;
@@ -83,7 +134,7 @@ export function brewNotFound() {
 
 export function homeScreen() {
   const brews = store.brews();
-  const waiting = brews.filter((b) => !b.survey).slice(0, 5);
+  const waiting = brews.filter((b) => !b.survey && isActive(b)).slice(0, 5); // 비활성 기록(9/27)은 설문을 기다리지 않는다
   const active = loadActive();
   return h(
     'div',
@@ -92,8 +143,8 @@ export function homeScreen() {
     storageBanner(),
     active?.state?.status === 'running' ? h('a', { class: 'button primary big wide', href: '#/timer' }, '진행 중인 추출로 돌아가기') : null,
     active?.state?.status === 'ready' ? h('a', { class: 'button primary big wide', href: '#/timer' }, '준비한 추출로 돌아가기') : null,
-    // 남은 원두가 10g 이하인 원두(사용자 요청 9/25) — 다 썼으면 그 자리에서 「소모」로 바꾼다
-    ...store.list('beans').filter((x) => beanStock(x, brews, store.list('beans')).low).map((x) => lowBeanNotice(x, brews, 'home')),
+    // 남은 양이 10g 이하인 봉투(사용자 요청 9/25 · 9/26 봉투마다) — 다 썼으면 그 자리에서 「모두 소비됨」으로 바꾼다
+    ...lowBagNotices('home'), // 남은 양이 10g 이하인 봉투(9/26 B안 — 봉투마다)
     h('a', { class: 'button primary big wide', href: '#/prep' }, '추출하기'),
     waiting.length ? section('테이스팅 노트를 기다리는 기록', ...waiting.map(brewRow)) : null,
     section('최근 기록', ...(brews.length ? brews.slice(0, 3).map(brewRow) : [h('div', { class: 'hint' }, '아직 기록이 없습니다.')])),
@@ -141,27 +192,49 @@ export function historyScreen() {
       { class: `list-row pick-row${sel.has(b.id) ? ' on' : ''}` },
       box,
       h('div', { class: 'grow' }, h('div', null, `${b.recipe.name} · ${b.bean?.name ?? '원두 미입력'}`), h('div', { class: 'hint' }, fmtDateTime(b.timer.startedAt))),
-      h('div', { class: 'right' }, formatSec(timerOf(b).totalSec)),
+      h('div', { class: 'right' }, formatSec(timerOf(b).totalSec), isActive(b) ? null : h('div', { class: 'hint' }, '비활성')),
     );
   };
   function draw() {
     if (!brews.length) return fill(root, h('h1', null, '기록 (0)'), h('div', { class: 'hint' }, '아직 기록이 없습니다.'));
     // 목록은 홈 「최근 기록」처럼 칸 안에 줄마다 상자(9/26 사용자 요청 — 기록·원두·레시피 목록 통일)
+    // 9/27: 위에 활성 기록, 아래에 비활성 기록(회색 칸 — 원두의 소비된 원두와 같은 모양)
+    const on = brews.filter(isActive);
+    const off = brews.filter((b) => !isActive(b));
     if (!sel) {
       return fill(
         root,
         h('h1', null, `기록 (${brews.length})`),
-        section(null, h('div', { class: 'hint sub-hint' }, '길게 누르면 여러 기록을 골라 AI 로 함께 공유할 수 있습니다.'), ...brews.map((b) => longPress(brewRow(b), b.id))),
+        section(null, h('div', { class: 'hint sub-hint' }, '길게 누르면 여러 기록을 골라 AI 로 함께 공유하거나, 비활성화·지우기를 할 수 있습니다.'), ...(on.length ? on.map((b) => longPress(brewRow(b), b.id)) : [h('div', { class: 'hint' }, '활성 기록이 없습니다.')])),
+        off.length ? inactiveSection(`비활성 기록 (${off.length})`, h('div', { class: 'hint' }, '비교·제안에서 뺀 기록입니다. 원두 남은 양에는 그대로 셉니다.'), ...off.map((b) => longPress(brewRow(b), b.id))) : null,
       );
     }
+    const picked = brews.filter((b) => sel.has(b.id));
+    const allOff = picked.length > 0 && picked.every((b) => !isActive(b)); // 고른 것이 모두 비활성이면 [다시 활성화]
     fill(
       root,
       h('h1', null, `${sel.size}건 고름`),
-      section(null, ...brews.map(pickRow)),
+      section(null, ...on.map(pickRow)),
+      off.length ? inactiveSection('비활성 기록', ...off.map(pickRow)) : null,
       h(
         'div',
         { class: 'select-bar' },
         h('button', { type: 'button', onClick: () => { logEvent('share.selectCancel', { count: sel.size }); sel = null; draw(); } }, '취소'),
+        h('button', {
+          type: 'button',
+          disabled: sel.size === 0,
+          onClick: async () => {
+            if (allOff) setBrewsInactive(picked, false, null, 'list');
+            else {
+              const mark = await askInactive(picked.filter(isActive).length);
+              if (!mark) return;
+              setBrewsInactive(picked, true, mark, 'list');
+            }
+            toast(allOff ? '다시 활성화했습니다.' : '비활성화했습니다.');
+            rerender();
+          },
+        }, allOff ? '다시 활성화' : '비활성화'),
+        h('button', { type: 'button', disabled: sel.size === 0, onClick: async () => { if (await deleteBrews(picked, 'list')) rerender(); } }, '지우기'),
         h('button', {
           type: 'button',
           class: 'primary',
@@ -426,6 +499,12 @@ export function detailScreen(id) {
     { class: 'screen' },
     h('h1', null, b.recipe.name),
     h('div', { class: 'hint' }, `${fmtDateTime(b.timer.startedAt)} · 총 ${formatSec(timerOf(b).totalSec)} (레시피 ${formatSec(b.timer.plannedTotalSec)})`),
+    // 비활성 기록(9/27): 사유와 [다시 활성화]
+    isActive(b)
+      ? null
+      : h('div', { class: 'notice notice-row' },
+          h('div', null, `비활성 기록${inactiveLine(b) ? ` — ${inactiveLine(b)}` : ''}`, h('span', { class: 'term-sub' }, `${fmtDateTime(Date.parse(b.inactive.at))}에 비활성화 · 비교·제안에서 빠져 있습니다.`)),
+          h('button', { type: 'button', onClick: () => { setBrewsInactive([b], false, null, 'detail'); toast('다시 활성화했습니다.'); rerender(); } }, '다시 활성화')),
     section('지난 추출과 비교', ...lines.filter((l) => l.tagName !== 'A'), prev.partner ? compareFigure(b, prev.partner, '지난 추출') : null, prev.partner ? compareTable(b, prev.partner, prev.partnerKind) : null),
     section('타이머', timerTable(b), brewFigure(b)),
     measurementOf(b) ? section('분쇄 측정', h('div', { class: 'hint' }, measureSummary(measurementOf(b))), measureView(measurementOf(b))) : null,
@@ -440,6 +519,14 @@ export function detailScreen(id) {
       h('a', { class: 'button', href: `#/brew/${b.id}/result` }, '결과 수정'),
       h('a', { class: 'button primary', href: `#/brew/${b.id}/survey` }, b.survey ? '테이스팅 노트 수정' : '테이스팅 노트 쓰기'),
       h('a', { class: 'button', href: `#/brew/${b.id}/share` }, 'AI로 공유'),
+    ),
+    h(
+      'div',
+      { class: 'row wrap' },
+      isActive(b)
+        ? h('button', { type: 'button', class: 'quiet', onClick: async () => { const mark = await askInactive(1); if (!mark) return; setBrewsInactive([b], true, mark, 'detail'); toast('비활성화했습니다.'); rerender(); } }, '이 기록 비활성화')
+        : null,
+      h('button', { type: 'button', class: 'quiet', onClick: async () => { if (await deleteBrews([b], 'detail')) location.hash = '#/history'; } }, '이 기록 지우기'),
     ),
   );
 }

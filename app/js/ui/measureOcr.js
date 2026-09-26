@@ -9,7 +9,7 @@
 //     ② 숫자 줄만 잘라 숫자·점·± 만 허용해 다시 읽는다. 둘이 같으면 믿을 만함, 다르면 확인 창에서 그 칸을 강조한다.
 //  4) 그라인더 이름은 등록한 그라인더 이름에 가까우면 그 이름으로 붙인다(core/grindMeasure.js snapMachine).
 
-import { parseHeaderText, parseStatsCells, decimalsIn, vote, snapMachine, measureWarnings, PHOTO_SOURCE } from '../core/grindMeasure.js';
+import { parseHeaderText, parseStatsCells, decimalsIn, vote, snapMachine, measureWarnings, PHOTO_SOURCE, photoCheck } from '../core/grindMeasure.js';
 
 const TESSERACT_URL = 'https://cdn.jsdelivr.net/npm/tesseract.js@7.0.0/dist/tesseract.esm.min.js';
 // width 1800·이진화 끔 = 9/26 변형 실측에서 가장 많이 맞힌 조합(원본·1080·558px JPEG 모두 5칸). 이진화는 작은 JPEG 의 숫자를 뭉갰다.
@@ -202,7 +202,7 @@ async function readHeader(worker, prep, opt) {
   return { ...parseHeaderText(text), text, confidence: data.confidence };
 }
 
-// 사진 파일 → { measurement, fields(칸별 믿을 만함), raw(인식한 글 — 로그용), ms }
+// 사진 파일 → { measurement, fields(칸별 믿을 만함), check(측정 사진이 맞나), raw(인식한 글 — 로그용), ms }
 // knownMachines = 등록한 그라인더 이름들, onProgress(0~1, 단계 이름)
 export async function readMeasurePhoto(file, { knownMachines = [], onProgress, opt = OCR_DEFAULTS } = {}) {
   const t0 = performance.now();
@@ -249,6 +249,7 @@ export async function readMeasurePhoto(file, { knownMachines = [], onProgress, o
   const warn = measureWarnings(measurement);
   return {
     measurement,
+    check: photoCheck({ cards: text.length, headerText: header?.text ?? '', statsText: stats?.text ?? '', measurement }),
     fields: { meanUm: { sure: mean.sure && !warn.meanUm, alt: mean.alt }, accuracyUm: { sure: acc.sure && !warn.accuracyUm, alt: acc.alt }, sdUm: { sure: sd.sure && !warn.sdUm, alt: sd.alt }, click: { sure: !warn.click }, machine: { sure: Boolean(snap.name), snapped: snap.snapped } },
     warnings: warn,
     raw: { cards: cards.length, charts: cards.filter((c) => c.chart).length, boxes: cards.map((c) => [c.y, c.h, c.chart ? 'chart' : 'text']), header: header?.text ?? '', stats: stats?.text ?? '', cells: stats?.cells, split: stats?.split, width: stats?.width ?? null, first: stats?.first, second: stats?.second, conf: [header?.confidence, stats?.confidence] },

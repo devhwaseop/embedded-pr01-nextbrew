@@ -13,9 +13,9 @@ import { icon } from '../icons.js';
 import { brewNotFound, SELECTION_KEY, adviceImportBox } from './records.js';
 import { store } from '../../core/store.js';
 import { SHARE_FORMATS, SHARE_SCOPES } from '../../core/schema.js';
-import { buildSharePackage, buildSelectionPackage, shareFileName, shareSheetName, toJSON, toMarkdown, defaultSharePrompt, SHARE_ROLES } from '../../core/share.js';
+import { buildSharePackage, buildSelectionPackage, shareFileName, shareSheetName, toJSON, toMarkdown, defaultSharePrompt, SHARE_ROLES, COMPARE_ROLES, compareOf } from '../../core/share.js';
 import { logEvent } from '../../core/log.js';
-import { SHARE_FORMAT_WORDS, SHARE_SCOPE_WORDS } from '../../core/words.js';
+import { SHARE_FORMAT_WORDS, SHARE_SCOPE_WORDS, COMPARE_WORDS } from '../../core/words.js';
 
 const BUFFER_MS = 800; // 「묶는 중」을 최소 이만큼 보여 준다(새 파일이 만들어졌다는 걸 눈으로 확인하게)
 const LABELS = Object.fromEntries(SHARE_FORMATS.map((f) => [f, SHARE_FORMAT_WORDS[f].label]));
@@ -37,6 +37,7 @@ export function shareScreen(id) {
   const root = h('div', { class: 'screen' });
   let format = SHARE_FORMATS.includes(store.settings().shareFormat) ? store.settings().shareFormat : 'md';
   let scope = SHARE_SCOPES.includes(store.settings().shareScope) ? store.settings().shareScope : 'with';
+  let compare = compareOf(store.settings().shareCompare); // 담을 비교 기록(9/26) — 처음 값은 설정의 기본
   let ready = null; // { format, pkg, text, name, file, method }
   // AI 답 넣기(9/26 사용자 결정 A안): 공유 → AI 앱 → 돌아와 이 화면 맨 아래에 붙여 넣는다. 답 안의 기록 ID 로 그 기록에 넣는다(records.js adviceImportBox).
   // 형식·범위를 바꿔 화면을 다시 그려도 붙여 넣은 글이 남게 한 번만 만든다.
@@ -120,7 +121,7 @@ export function shareScreen(id) {
     const started = Date.now();
     const pkg = selIds
       ? buildSelectionPackage({ brews: store.list('brews'), beans: store.list('beans'), drippers: store.list('drippers'), ids: selIds })
-      : buildSharePackage({ brews: store.list('brews'), beans: store.list('beans'), drippers: store.list('drippers'), current: b, scope });
+      : buildSharePackage({ brews: store.list('brews'), beans: store.list('beans'), drippers: store.list('drippers'), current: b, scope, compare });
     const text = format === 'json' ? toJSON(pkg) : toMarkdown(pkg);
     const name = shareFileName(pkg, format);
     const file = new File([text], name, { type: TYPES[format] });
@@ -129,7 +130,7 @@ export function shareScreen(id) {
     await sleep(Math.max(0, BUFFER_MS - (Date.now() - started)));
     if (no !== buildNo) return; // 그사이 형식을 또 바꿨으면 이 결과는 버린다
     ready = { format, pkg, text, name, file, sheetFile, method };
-    logEvent('share.build', { format, scope: pkg.scope, brews: pkg.brews.length, previous: Boolean(pkg.relations.previous), sameRecipeAndBean: Boolean(pkg.relations.sameRecipeAndBean) }, { brewId: b.id });
+    logEvent('share.build', { format, scope: pkg.scope, brews: pkg.brews.length, compare: pkg.relations.compare ?? null, found: (pkg.relations.compare ?? []).filter((r) => pkg.relations[r]) }, { brewId: b.id });
     draw();
   }
 
@@ -162,15 +163,42 @@ export function shareScreen(id) {
       return h('ul', { class: 'hint' }, ...ready.pkg.brews.map((x, i) => h('li', null, `${i + 1}. `, h('a', { href: `#/brew/${x.id}` }, `${fmtDateTime(x.timer.startedAt)} · ${x.recipe.name}`), x.id === rel.current ? ' (가장 최근)' : '')));
     }
     if (ready.pkg.scope === 'single') return h('ul', { class: 'hint' }, h('li', null, `${SHARE_ROLES.current}: `, h('a', { href: `#/brew/${rel.current}` }, '이 기록')));
-    const row = (role, id, extra) => h('li', null, `${SHARE_ROLES[role]}: `, id ? h('a', { href: `#/brew/${id}` }, extra ?? '보기') : '없음');
+    // 고른 비교 역할마다 찾은 기록 — 앞 역할과 같은 기록이면 그렇게 적는다(파일에는 한 번만 담긴다)
+    const seen = new Map([[rel.current, 'current']]);
+    const rows = (rel.compare ?? []).map((r) => {
+      const id = rel[r];
+      if (!id) return h('li', null, `${SHARE_ROLES[r]}: 없음`);
+      if (seen.has(id)) return h('li', null, `${SHARE_ROLES[r]}: 「${SHARE_ROLES[seen.get(id)]}」과 같은 기록`);
+      seen.set(id, r);
+      return h('li', null, `${SHARE_ROLES[r]}: `, h('a', { href: `#/brew/${id}` }, '보기'));
+    });
     return h(
       'ul',
       { class: 'hint' },
-      row('current', rel.current, '이 기록'),
-      row('previous', rel.previous),
-      rel.sameRecipeAndBean && rel.sameRecipeAndBean === rel.previous
-        ? h('li', null, `${SHARE_ROLES.sameRecipeAndBean}: 직전 추출과 같은 기록`)
-        : row('sameRecipeAndBean', rel.sameRecipeAndBean),
+      h('li', null, `${SHARE_ROLES.current}: `, h('a', { href: `#/brew/${rel.current}` }, '이 기록')),
+      ...rows,
+      rel.compare?.length ? null : h('li', null, '비교 기록을 고르지 않아 이번 추출만 담겼습니다.'),
+    );
+  }
+
+  // 비교 기록 고르기(9/26 사용자 요청): 여러 개 함께 고른다(칩을 누를 때마다 다시 묶음) · [모두 선택]/[모두 풀기]
+  function compareChooser() {
+    const all = compare.length === COMPARE_ROLES.length;
+    return h(
+      'div',
+      { class: 'stack compare-choose' },
+      h('div', { class: 'row-line' }, h('span', { class: 'field-label' }, '비교할 기록'),
+        h('button', { type: 'button', class: 'inline-btn', onClick: () => { compare = all ? [] : [...COMPARE_ROLES]; prepare(); } }, all ? '모두 풀기' : '모두 선택')),
+      chips({
+        options: COMPARE_ROLES.map((r) => COMPARE_WORDS[r]),
+        selected: compare.map((r) => COMPARE_WORDS[r]),
+        multi: true,
+        onChange: (v) => {
+          compare = compareOf(COMPARE_ROLES.filter((r) => v.includes(COMPARE_WORDS[r])));
+          prepare();
+        },
+      }),
+      h('div', { class: 'hint' }, '여러 개 함께 고를 수 있습니다. 같은 기록이 두 역할에 걸리면 한 번만 담깁니다.'),
     );
   }
 
@@ -209,6 +237,7 @@ export function shareScreen(id) {
             prepare();
           },
         }),
+        scope === 'with' ? compareChooser() : null,
       ),
       ready
         ? section(

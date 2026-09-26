@@ -4,7 +4,8 @@
 import { h, section, field, toast, modal, chips, toggle } from '../dom.js';
 import { store, createLocalAdapter, copyAll, COLLECTIONS } from '../../core/store.js';
 import { SHARE_FORMATS, SHARE_SCOPES } from '../../core/schema.js';
-import { SHARE_FORMAT_WORDS, SHARE_SCOPE_WORDS, WORDS } from '../../core/words.js';
+import { SHARE_FORMAT_WORDS, SHARE_SCOPE_WORDS, WORDS, COMPARE_WORDS } from '../../core/words.js';
+import { COMPARE_ROLES, compareOf } from '../../core/share.js';
 import { buildExport, parseImport, mergeById } from '../../core/export.js';
 import { logEvent } from '../../core/log.js';
 import { firebaseEnabled, signOutUser } from '../../platform/firebase.js';
@@ -25,14 +26,14 @@ function stamp() {
 async function doExport() {
   const include = store.settings().includeLogsInExport;
   const logs = include ? await store.logs() : null;
-  const data = buildExport({ brews: store.brews(), beans: store.list('beans'), grinders: store.list('grinders'), servers: store.list('servers'), recipes: store.list('recipes'), drippers: store.list('drippers'), measurements: store.list('measurements'), blends: store.list('blends'), logs });
+  const data = buildExport({ brews: store.brews(), beans: store.list('beans'), grinders: store.list('grinders'), servers: store.list('servers'), recipes: store.list('recipes'), drippers: store.list('drippers'), measurements: store.list('measurements'), blends: store.list('blends'), bags: store.list('bags'), logs });
   const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
   const a = h('a', { href: url, download: `nextbrew-${stamp()}.json` });
   document.body.append(a);
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
-  logEvent('export', { brews: data.brews.length, beans: data.beans.length, grinders: data.grinders.length, servers: data.servers.length, recipes: data.recipes.length, drippers: data.drippers.length, measurements: data.measurements.length, blends: data.blends.length, logs: logs?.length ?? 0 });
+  logEvent('export', { brews: data.brews.length, beans: data.beans.length, grinders: data.grinders.length, servers: data.servers.length, recipes: data.recipes.length, drippers: data.drippers.length, measurements: data.measurements.length, blends: data.blends.length, bags: data.bags.length, logs: logs?.length ?? 0 });
 }
 
 async function doImport(file) {
@@ -135,6 +136,21 @@ export function settingsScreen() {
             if (k) store.setSetting('shareScope', k);
           },
         }),
+      ),
+      // 기본 비교 기록(9/26 사용자 요청 — 여러 개 함께). 공유 화면에서 그때그때 바꿀 수 있다
+      field(
+        '기본 비교 기록',
+        chips({
+          options: COMPARE_ROLES.map((r) => COMPARE_WORDS[r]),
+          selected: compareOf(store.settings().shareCompare).map((r) => COMPARE_WORDS[r]),
+          multi: true,
+          onChange: (v) => {
+            const list = compareOf(COMPARE_ROLES.filter((r) => v.includes(COMPARE_WORDS[r])));
+            store.setSetting('shareCompare', list);
+            logEvent('share.compareDefault', { compare: list });
+          },
+        }),
+        '「비교 기록 함께」일 때 담는 기록입니다. 여러 개 고를 수 있습니다.',
       ),
     ),
     section(

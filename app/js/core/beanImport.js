@@ -5,7 +5,7 @@
 // 앱은 받은 값이 형식·범위에 맞는지만 검사하고, 뜻을 새로 만들지 않는다.
 
 import { readLooseJson, fieldReaders } from './looseJson.js';
-import { ROASTS, PROFILE_SCALES, roastWordOf, roastLabel, profileLine } from './schema.js';
+import { ROASTS, PROFILE_SCALES, BEAN_UNITS, roastWordOf, roastLabel, profileLine } from './schema.js';
 import { ROAST_WORD_LEVEL } from './migrate.js';
 import { partsLine, MAX_PARTS } from './blend.js';
 
@@ -19,7 +19,7 @@ export const BEAN_EXAMPLE = {
   roaster: '예시 로스터리',
   country: '에티오피아',
   region: '예가체프',
-  producer: '첼바',
+  producer: '첼바 G1',
   variety: '에어룸',
   process: '워시드',
   blend: null,
@@ -28,13 +28,13 @@ export const BEAN_EXAMPLE = {
   decaf: false,
   notes: ['자스민', '레몬', '홍차'],
   profile: { scale: 5, items: [{ label: '산미', value: 4 }, { label: '단맛', value: 3.5 }, { label: '바디', value: 2 }] },
-  roastedOn: null,
+  bags: [{ amount: 200, unit: 'g', count: 2, roastedOn: null }],
   uncertain: ['profile: 원문은 막대 그래프라 칸 수를 세어 적음'],
 };
 
 export function beanPrompt() {
   return `커피 원두 정보를 NextBrew 앱에 넣을 JSON 으로 옮겨 주세요.
-원두 정보(로스터리 상세 페이지·봉투 사진이나 글)는 이 메시지에 첨부했습니다.
+원두 정보(로스터리 상세 페이지·봉투 사진·주문 내역이나 글)는 이 메시지에 첨부했습니다.
 
 ## 꼭 지켜 주세요
 1. 원문에 없는 값은 지어내지 말아 주세요. 모르는 값은 null(목록이면 [])로 두고, 자신 없는 칸은 "uncertain"에 까닭과 원문 표기를 한 줄씩 적어 주세요.
@@ -42,6 +42,7 @@ export function beanPrompt() {
 
 ## 로스터리마다 다른 표현을 앱 형식으로 맞추는 규칙
 - country: 나라 이름은 한국어로(Ethiopia → 에티오피아, Colombia → 콜롬비아).
+- producer: 농장·생산자·워싱 스테이션 이름에 더해, 원문에 있는 브랜드(상품) 이름(예: 만델링)과 등급(예: G1·G2·G4 등)도 원문 순서대로 이어 적어 주세요(예: "만델링 G1", "첼바 G1"). 산지(country·region)에 이미 적은 말은 되풀이하지 마세요.
 - process: 흔한 한국어 표기로 — 워시드(washed·수세식), 내추럴(natural·건식), 허니(honey), 무산소 발효(anaerobic). 둘 이상이면 원문 순서대로(예: 무산소 내추럴).
 - blend: 여러 산지 원두를 섞은 블렌드면 {"parts": [{"country", "region", "variety", "process", "pct"}]} 로 산지마다 한 줄씩(원문 순서) 적어 주세요. pct 는 원문에 비율(%)이 있을 때만, 없으면 null. 싱글 오리진이면 blend 는 null. 블렌드일 때 위의 country·region·producer·variety·process 는 null 로 두세요.
 - roast: 원문 배전 표기를 약배전·중약배전·중배전·중강배전·강배전 중 하나로 — 라이트·시나몬 → 약배전, 미디엄 라이트 → 중약배전, 미디엄·시티 → 중배전, 미디엄 다크·풀시티 → 중강배전, 다크·프렌치·이탈리안 → 강배전. 판단이 어려우면 null 로 두고 uncertain 에 원문 표기를 적어 주세요.
@@ -52,12 +53,30 @@ export function beanPrompt() {
   - scale: 원문 척도가 5점이면 5, 10점이면 10. 별·점·막대는 칸의 최대 개수가 척도(★★★☆☆ → scale 5, value 3). 「약·중·강」처럼 3단계 말이면 5점으로 1·3·5. 그 밖의 척도(예: 4점)는 5점으로 비율을 맞춰 0.5 단위로 반올림하고 uncertain 에 원문을 적어 주세요.
   - value: 0 ~ scale, 0.5 단위.
   - label: 앱 이름으로 — 산미(신맛·acidity), 단맛(sweetness), 바디(바디감·body·무게감·마우스필), 쓴맛(bitterness), 고소함(고소·nutty), 밸런스(균형·balance). 그 밖의 항목은 원문 이름 그대로(예: 향미, 여운, 클린컵).
-- roastedOn: 로스팅 날짜가 있으면 YYYY-MM-DD, 없으면 null.
+- bags: 산 봉투(주문 내역·봉투 사진에 있을 때만) — [{"amount": 무게 숫자, "unit": "g"|"kg"|"oz"|"lb", "count": 같은 봉투 개수, "roastedOn": 로스팅 날짜 YYYY-MM-DD 또는 null}]. 무게·개수를 모르면 [].
+
+## 원두가 여러 개면(같은 로스터리의 주문 내역·봉투 여러 장)
+{"format": "nextbrew-bean", "version": 1, "beans": [ … ]} 로, beans 에 원두마다 아래 형식(format·version 은 빼고)을 하나씩 넣어 주세요. 같은 원두를 여러 봉 샀으면 원두는 한 번만 적고 bags 의 count 로 적어 주세요.
 
 ## 형식(format·version 은 그대로)
 \`\`\`json
 ${JSON.stringify(BEAN_EXAMPLE, null, 2)}
 \`\`\``;
+}
+
+// 봉투 글: 「200g × 2 · 제조 2026-09-20」
+export function bagsText(bags) {
+  return (bags ?? []).map((g) => `${g.amount ?? '?'}${g.unit}${g.count > 1 ? ` × ${g.count}` : ''}${g.roastedOn ? ` · 제조 ${g.roastedOn}` : ''}`).join(' / ');
+}
+
+// 여러 원두(9/26 사용자 요청 — 로스터리만 같은 원두 여럿을 AI 로 한꺼번에 등록): { beans: [...] } 이면 원두마다 검사, 아니면 한 원두
+export function validateBeanList(raw) {
+  if (raw && Array.isArray(raw.beans)) {
+    const warnings = raw.format !== BEAN_FORMAT ? [`format: "${raw.format ?? ''}" — 원두 정보 형식(${BEAN_FORMAT})이 아닐 수 있습니다.`] : [];
+    if (raw.beans.length > 20) warnings.push('beans: 한 번에 20개까지만 씁니다.');
+    return { items: raw.beans.slice(0, 20).map((b) => validateBeanImport({ ...b, format: BEAN_FORMAT })), warnings };
+  }
+  return { items: [validateBeanImport(raw)], warnings: [] };
 }
 
 export function readBeanText(text) {
@@ -141,6 +160,20 @@ export function validateBeanImport(raw) {
       if (parts.length === 1) warn('blend: 구성이 하나뿐입니다 — 싱글 오리진이면 blend 를 null 로 두는 편이 맞습니다.');
     }
   }
+  // 봉투(9/26 B안): 무게·개수·제조일. 개수는 1~20, 무게는 단위와 함께
+  v.bags = [];
+  (Array.isArray(raw.bags) ? raw.bags : []).slice(0, 10).forEach((g, i) => {
+    const amount = inRange(num(g?.amount, `bags[${i}].amount`), `bags[${i}].amount`, 1, 10000, '무게');
+    const unit = typeof g?.unit === 'string' ? g.unit.trim().toLowerCase() : 'g';
+    if (!BEAN_UNITS[unit]) return warn(`bags[${i}].unit: "${g?.unit}" 는 g·kg·oz·lb 가 아니라 뺍니다.`);
+    const count = Math.round(inRange(num(g?.count ?? 1, `bags[${i}].count`), `bags[${i}].count`, 1, 20, '개수') ?? 1);
+    let roastedOn = null;
+    if (g?.roastedOn != null) {
+      if (typeof g.roastedOn === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(g.roastedOn)) roastedOn = g.roastedOn;
+      else warn(`bags[${i}].roastedOn: "${g.roastedOn}" 는 YYYY-MM-DD 가 아니라 비워 둡니다.`);
+    }
+    v.bags.push({ amount, unit, count, roastedOn });
+  });
   if (raw.roastedOn != null) {
     if (typeof raw.roastedOn === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(raw.roastedOn)) v.roastedOn = raw.roastedOn;
     else warn(`roastedOn: "${raw.roastedOn}" 는 YYYY-MM-DD 가 아니라 비워 둡니다.`);
@@ -163,6 +196,7 @@ export const BEAN_FIELDS = [
   ['notes', '노트'],
   ['roasterProfile', '로스터리 맛 지표'],
   ['roastedOn', '제조일(로스팅일)'],
+  ['bags', '봉투(무게·개수)'],
 ];
 const show = (key, v) => {
   if (v == null || (Array.isArray(v) && !v.length) || v === '') return '';
@@ -170,6 +204,7 @@ const show = (key, v) => {
   if (key === 'notes') return v.join(', ');
   if (key === 'roasterProfile') return profileLine(v);
   if (key === 'blend') return partsLine(v.parts, { kind: v.by === 'me' ? 'grams' : 'origin' });
+  if (key === 'bags') return bagsText(v);
   return String(v);
 };
 export function beanPatch(bean, v) {
@@ -186,6 +221,7 @@ export function beanPatch(bean, v) {
     notes: v.notes?.length ? v.notes : null,
     roasterProfile: v.profile,
     roastedOn: v.roastedOn,
+    bags: v.bags?.length ? v.bags : null,
   };
   const now = { ...bean, roast: roastLabel(bean), decaf: bean.decaf ? true : null }; // 옛 단어에서 옮긴 숫자는 「약」이 붙는다
   return BEAN_FIELDS.filter(([k]) => show(k, want[k]) !== '').map(([key, label]) => {

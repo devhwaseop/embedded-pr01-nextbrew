@@ -7,7 +7,7 @@
 import { setLogSink, logEvent } from './log.js';
 import { upgradeData, syncRefs, syncBlendParts } from './migrate.js';
 
-export const COLLECTIONS = ['brews', 'beans', 'grinders', 'servers', 'recipes', 'drippers', 'measurements', 'blends']; // recipes: 가져온 레시피(9/24), drippers·measurements·blends(블렌드 템플릿): 9/26
+export const COLLECTIONS = ['brews', 'beans', 'grinders', 'servers', 'recipes', 'drippers', 'measurements', 'blends', 'bags']; // bags: 원두 봉투(9/26 B안) // recipes: 가져온 레시피(9/24), drippers·measurements·blends(블렌드 템플릿): 9/26
 // 기록이 ID 로 가리키는 등록 항목 — 이것을 저장하면 가리키는 기록의 이름 등을 따라 바꾼다(core/migrate.js 포인터)
 const REGISTRY = ['beans', 'grinders', 'servers', 'drippers', 'blends'];
 
@@ -128,18 +128,25 @@ function createStore() {
     // via = load(불러올 때) | import(JSON 가져오기 뒤)
     upgrade(via) {
       const data = Object.fromEntries(COLLECTIONS.map((c) => [c, [...maps[c].values()]]));
-      const { changed, steps, settingsPatch } = upgradeData(data, settings);
+      const { changed, removed, steps, settingsPatch } = upgradeData(data, settings);
       for (const [c, docs] of Object.entries(changed)) {
         for (const d of docs) {
           maps[c].set(d.id, d);
           adapter.put(c, d);
         }
       }
+      // 합쳐서 없앤 문서(9/26 같은 드리퍼) — 가리키던 기록은 위에서 남긴 쪽으로 옮겨 두었다
+      for (const [c, ids] of Object.entries(removed ?? {})) {
+        for (const id of ids) {
+          maps[c].delete(id);
+          adapter.remove(c, id);
+        }
+      }
       if (Object.keys(settingsPatch).length) {
         settings = { ...settings, ...settingsPatch };
         adapter.putSettings(settings);
       }
-      if (Object.keys(steps).length) logEvent('data.upgrade', { via, steps, docs: Object.fromEntries(Object.entries(changed).map(([c, d]) => [c, d.length])) });
+      if (Object.keys(steps).length) logEvent('data.upgrade', { via, steps, docs: Object.fromEntries(Object.entries(changed).map(([c, d]) => [c, d.length])), ...(Object.keys(removed ?? {}).length ? { removed } : {}) });
       return steps;
     },
     onChange(fn) {

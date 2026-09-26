@@ -46,11 +46,14 @@ export const END_STATE_WORDS = {
   cutoff: { label: '강제 종료', sub: '물줄기가 이어지거나 물이 고인 채로 드리퍼를 뗐습니다.' },
 };
 
-// AI 공유에 담을 기록(사용자 요청 9/24: 설문 뒤 공유 화면에서 이 기록만 고를 수 있게)
+// AI 공유에 담을 기록(사용자 요청 9/24: 설문 뒤 공유 화면에서 단일 기록만 고를 수 있게)
 export const SHARE_SCOPE_WORDS = {
-  with: { label: '비교 기록 함께', sub: '직전 추출과, 레시피·원두가 같은 최근 추출을 함께 담습니다.' },
-  single: { label: '이 기록만', sub: '이번 추출 하나만 담습니다.' },
+  with: { label: '비교 기록 함께', sub: '아래에서 고른 비교 기록(직전 추출·같은 원두·같은 레시피 등)을 함께 담습니다.' },
+  single: { label: '단일 기록만', sub: '이번 추출 하나만 담습니다.' }, // 9/26 「이 기록만」 → 「단일 기록만」(사용자 요청)
 };
+
+// 비교 기록 칩 이름(9/26 사용자 요청 — 여러 개 함께 고른다). 파일 안의 역할 이름은 core/share.js SHARE_ROLES
+export const COMPARE_WORDS = { previous: '직전 추출', sameBean: '같은 원두', sameRecipe: '같은 레시피', sameRecipeAndBean: '같은 레시피·원두' };
 
 // AI 공유 파일 형식(사용자 기준 9/23: 데이터로 저장 → JSON, AI 질문용 → MD)
 export const SHARE_FORMAT_WORDS = {
