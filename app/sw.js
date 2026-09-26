@@ -23,6 +23,7 @@ const SHELL = [
   './js/core/store.js',
   './js/core/export.js',
   './js/core/suggest.js',
+  './js/core/grindMeasure.js',
   './js/core/facts.js',
   './js/core/share.js',
   './js/core/words.js',
@@ -37,6 +38,8 @@ const SHELL = [
   './js/platform/wakelock.js',
   './js/ui/dom.js',
   './js/ui/charts.js',
+  './js/ui/measureImport.js',
+  './js/ui/measureOcr.js',
   './js/ui/icons.js',
   './js/ui/tabSlide.js',
   './js/ui/tabSwipe.js',
@@ -47,6 +50,7 @@ const SHELL = [
   './js/ui/screens/settings.js',
   './js/ui/screens/share.js',
   './js/ui/screens/recipes.js',
+  './js/ui/screens/gear.js',
 ];
 
 self.addEventListener('install', (e) => {

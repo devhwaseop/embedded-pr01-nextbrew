@@ -17,3 +17,17 @@ export function suggestNotes(beans, { country, process, excludeId = null }, limi
     .slice(0, limit)
     .map(([n]) => n);
 }
+
+// 테이스팅 노트의 원두 노트 인식 미리 채우기(사용자 요청 9/25 — screens/survey.js).
+// 같은 원두(id)로 이 기록보다 먼저 내린 기록들에서, 노트마다 가장 최근에 답한 인식 값 → { 노트: { value, at(그 추출 시각) } }
+export function lastNotePerceptions(brews, current, notes) {
+  const earlier = brews
+    .filter((x) => x.id !== current.id && current.bean?.id && x.bean?.id === current.bean.id && x.survey && x.timer.startedAt < current.timer.startedAt)
+    .sort((a, b) => b.timer.startedAt - a.timer.startedAt);
+  const out = {};
+  for (const n of notes) {
+    const hit = earlier.find((x) => x.survey.notePerception?.[n]);
+    if (hit) out[n] = { value: hit.survey.notePerception[n], at: hit.timer.startedAt };
+  }
+  return out;
+}

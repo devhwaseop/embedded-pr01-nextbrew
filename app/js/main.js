@@ -13,7 +13,8 @@ import { shareScreen } from './ui/screens/share.js';
 import { beansScreen, beanFormScreen } from './ui/screens/beans.js';
 import { settingsScreen, applyDisplaySettings } from './ui/screens/settings.js';
 import { recipesScreen } from './ui/screens/recipes.js';
-import { slideTabs, reducedMotion, SLIDE_MS, EASING } from './ui/tabSlide.js';
+import { grindersScreen, serversScreen } from './ui/screens/gear.js';
+import { slideTabs, shiftSegment, enterFallback, reducedMotion, SLIDE_MS, EASING } from './ui/tabSlide.js';
 import { enableTabSwipe } from './ui/tabSwipe.js';
 
 const ROUTES = [
@@ -24,11 +25,14 @@ const ROUTES = [
   [/^#\/brew\/([^/]+)\/result$/, resultScreen],
   [/^#\/brew\/([^/]+)\/survey$/, surveyScreen],
   [/^#\/brew\/([^/]+)\/share$/, shareScreen],
+  [/^#\/share\/selected$/, () => shareScreen('selected')], // 기록 목록에서 고른 여러 건(9/26)
   [/^#\/history$/, historyScreen],
   [/^#\/beans$/, beansScreen],
   [/^#\/bean\/([^/]+)$/, beanFormScreen],
   [/^#\/settings$/, settingsScreen],
   [/^#\/recipes$/, recipesScreen],
+  [/^#\/grinders$/, grindersScreen],
+  [/^#\/servers$/, serversScreen],
 ];
 
 // 아래 탭: 아이콘만 보이고(사용자 요청 9/24) 이름은 화면 읽기 프로그램용으로 숨겨 둔다
@@ -44,17 +48,17 @@ let cleanup = null;
 let lastHash = null; // 화면 전환의 종류·방향을 정하려고(ui/tabSlide.js · 아래 transitionKind)
 let swipedTo = null; // 끌어 넘긴 탭 번호 — 이미 손가락으로 넘겼으니 슬라이드를 다시 하지 않는다
 
-// 아래 탭 번호(탭 첫 화면만 — 슬라이드·끌어 넘기기). 원두 탭 안의 레시피 칸도 원두 탭이다(9/25)
+// 원두 탭 안 [원두 | 레시피 | 그라인더 | 서버] 칸 — 옮길 때 옆으로 넘긴다
+const SEGMENTS = ['#/beans', '#/recipes', '#/grinders', '#/servers'];
+// 아래 탭 번호(탭 첫 화면만 — 슬라이드·끌어 넘기기). 원두 탭 안의 네 칸은 모두 원두 탭이다(9/25·9/26)
 function tabIndexOf(hash) {
-  return hash === '#/recipes' ? 2 : NAV.findIndex(([href]) => href === hash);
+  return SEGMENTS.includes(hash) ? 2 : NAV.findIndex(([href]) => href === hash);
 }
 // 탭 막대에서 켤 탭: 탭 첫 화면 + 원두 등록·수정 화면(원두 탭)
 function navIndexOf(hash) {
   const i = tabIndexOf(hash);
   return i >= 0 ? i : hash.startsWith('#/bean/') ? 2 : -1;
 }
-// 원두 탭 안 [원두 | 레시피] 칸 — 옮길 때 탭처럼 한 칸 넘긴다
-const SEGMENTS = ['#/beans', '#/recipes'];
 
 // 화면 전환 두 가지(9/25 사용자 결정 — 시각 요소). View Transitions API(크롬 111·Safari 18·Firefox 144 이상)로, 없으면 그냥 바뀐다.
 // ① 준비 → 타이머 → 결과 → 설문: 앞으로 가면 새 화면이 다가오고 뒤로 가면 물러난다(Material 「shared axis Z」)
@@ -136,7 +140,14 @@ function render() {
   lastHash = hash;
   const kind = from && swipedTo == null ? transitionKind(from, hash) : null;
   const expandRow = kind === 'expand' ? rowFor(detailId(hash)) : null;
-  if (!kind || !document.startViewTransition || reducedMotion() || (kind === 'expand' && !expandRow)) return swap(hash, from);
+  if (!kind || (kind === 'expand' && !expandRow)) return swap(hash, from);
+  // View Transitions 가 없으면(iOS 17 이하 등) 새 화면만 WAAPI 로 움직인다. 동작 줄이기면 겹쳐 바꾸기(9/26 — ui/tabSlide.js)
+  if (!document.startViewTransition || reducedMotion()) {
+    const oldNode = screenOf();
+    const oldScrollY = window.scrollY;
+    swap(hash, from);
+    return enterFallback(kind, screenOf(), { oldNode, oldScrollY });
+  }
   // 전환 앞뒤로 같은 이름(brew-card)을 붙인 두 요소를 브라우저가 이어 준다: 목록의 줄 ↔ 상세 화면
   // 상세 화면은 화면보다 훨씬 길어서 그대로 이으면 화면 밖으로 커져 버린다 → 전환하는 동안만 보이는 높이로 자른다(9/25 실측)
   const named = [];
@@ -197,7 +208,8 @@ function swap(hash, from) {
     const fi = tabIndexOf(from ?? '');
     if (fi >= 0 && ti >= 0 && fi !== ti) slideTabs({ i: fi, j: ti, oldNode, oldScrollY, newNode: node, renderAt: (t) => screenNode(NAV[t][0]) });
     else if (SEGMENTS.includes(from) && SEGMENTS.includes(hash) && from !== hash) {
-      slideTabs({ i: SEGMENTS.indexOf(from), j: SEGMENTS.indexOf(hash), oldNode, oldScrollY, newNode: node, renderAt: (t) => screenNode(SEGMENTS[t]) });
+      // 네 칸 사이는 짧게 밀며 겹쳐 바꾼다(9/26 사용자 결정 A안 — 아래 탭의 화면 전체 슬라이드와 구분)
+      shiftSegment({ dir: Math.sign(SEGMENTS.indexOf(hash) - SEGMENTS.indexOf(from)), oldNode, oldScrollY, newNode: node });
     }
     return;
   }

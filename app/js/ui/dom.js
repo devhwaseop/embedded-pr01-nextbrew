@@ -72,15 +72,17 @@ export function tags(list) {
 }
 
 // 숫자: − [입력] + (순서대로 올리고 내리기 + 직접 입력). prefix = 입력칸 앞 표시(비율의 「1:」)
-export function stepper({ value, step = 1, min = 0, max = 9999, unit = '', prefix = '', onChange }) {
-  const input = h('input', { type: 'number', inputMode: 'decimal', value: value ?? '', step, min, max, class: 'stepper-input' });
+// decimals = 남기는 소수 자리(처음 값 1). 분쇄 측정(9/26)은 사이트 표기대로 2자리 — 그때 입력칸은 step 'any'(−/+ 는 step 만큼).
+export function stepper({ value, step = 1, min = 0, max = 9999, unit = '', prefix = '', decimals = 1, onChange }) {
+  const input = h('input', { type: 'number', inputMode: 'decimal', value: value ?? '', step: decimals > 1 ? 'any' : step, min, max, class: 'stepper-input' });
+  const f = 10 ** decimals;
   const set = (v) => {
     if (v === '' || v == null || Number.isNaN(v)) {
       input.value = '';
       onChange(null);
       return;
     }
-    const n = Math.min(max, Math.max(min, Math.round(v * 10) / 10));
+    const n = Math.min(max, Math.max(min, Math.round(v * f) / f));
     input.value = n;
     onChange(n);
   };
@@ -142,11 +144,12 @@ export function dateStepper({ value, onChange, start = null, clearable = true })
 }
 
 // 목록에서 고르기 + 「직접 입력…」
-export function choiceList({ options, value, onChange, customLabel = '직접 입력…' }) {
+// labels = { 값: 보이는 글 } — 값 옆에 출처를 붙여 보일 때(9/26 가공방식 「? (콩볶는사람들 · 인도네시아)」). 저장되는 것은 값이다.
+export function choiceList({ options, value, onChange, customLabel = '직접 입력…', labels = null }) {
   const opts = [...new Set([...options, ...(value && !options.includes(value) ? [value] : [])])];
   // 값이 없으면 첫 항목이 골라진 것처럼 보이지 않게 빈 칸을 둔다
   const blank = value == null ? h('option', { value: '', selected: true, disabled: true }, '선택') : null;
-  const select = h('select', null, blank, ...opts.map((o) => h('option', { value: o, selected: o === value }, o)), h('option', { value: '__custom__' }, customLabel));
+  const select = h('select', null, blank, ...opts.map((o) => h('option', { value: o, selected: o === value }, labels?.[o] ?? o)), h('option', { value: '__custom__' }, customLabel));
   const custom = h('input', { type: 'text', placeholder: '직접 입력', class: 'hidden' });
   select.addEventListener('change', () => {
     if (select.value === '__custom__') {
@@ -203,9 +206,18 @@ export function chips({ options, selected, multi = false, onChange, describe = n
 }
 
 // 칩 여러 개 고르기 + 목록에 없는 말을 직접 추가
-export function tagEditor({ options, selected, onChange, placeholder = '직접 추가' }) {
+// removable = 고른 칩 오른쪽 위에 동그란 × (9/26 사용자 요청 — 원두 「로스터리 표기 노트」). 누르면 목록에서 지운다.
+//   직접 적은 노트는 사라지고, 추천 노트는 고르지 않은 칩으로 돌아간다. 칩을 다시 눌러 끄는 것도 그대로 된다.
+export function tagEditor({ options, selected, onChange, placeholder = '직접 추가', removable = false }) {
   let sel = [...(selected ?? [])];
   const wrap = h('div');
+  const xChip = (o) => {
+    const on = sel.includes(o);
+    const chip = h('button', { type: 'button', class: `chip${on ? ' on' : ''}`, 'aria-pressed': String(on), onClick: () => { sel = on ? sel.filter((x) => x !== o) : [...sel, o]; onChange([...sel]); draw(); } }, o);
+    if (!on) return chip;
+    const x = h('button', { type: 'button', class: 'chip-x', 'aria-label': `${o} 지우기`, onClick: () => { sel = sel.filter((v) => v !== o); onChange([...sel]); draw(); } }, h('span', { 'aria-hidden': 'true' }, '×'));
+    return h('span', { class: 'chip-wrap' }, chip, x);
+  };
   const draw = () => {
     const opts = [...new Set([...options, ...sel])];
     const input = h('input', { type: 'text', placeholder });
@@ -219,7 +231,7 @@ export function tagEditor({ options, selected, onChange, placeholder = '직접 �
     input.addEventListener('keydown', (e) => e.key === 'Enter' && (e.preventDefault(), add()));
     fill(
       wrap,
-      chips({ options: opts, selected: sel, multi: true, onChange: (v) => { sel = v; onChange([...sel]); } }),
+      removable ? h('div', { class: 'chips' }, ...opts.map(xChip)) : chips({ options: opts, selected: sel, multi: true, onChange: (v) => { sel = v; onChange([...sel]); } }),
       h('div', { class: 'row' }, input, h('button', { type: 'button', onClick: add }, '추가')),
     );
   };
@@ -273,9 +285,14 @@ export function levelSlider({ label, words, ticks = words, value, onChange }) {
     paint();
     onChange(level);
   };
-  // 「선택 안 함」 상태에서 가운데를 그냥 눌러도 값이 들어가도록 click 도 받는다
   range.addEventListener('input', take);
-  range.addEventListener('click', take);
+  // 「선택 안 함」 상태에서 손잡이가 있는 가운데(보통)를 그냥 누르면 값이 바뀌지 않아 input 이 안 온다(사용자 보고 9/25 — 폰에서는 click 도 안 옴).
+  // 누른 손을 뗄 때(pointerup)·값 확정(change)·키보드에서 아직 비어 있으면 지금 자리를 고른 것으로 본다. 「보통」과 「선택 안 함」은 다른 값이다.
+  const takeIfOff = () => level == null && take();
+  range.addEventListener('pointerup', takeIfOff);
+  range.addEventListener('change', takeIfOff);
+  range.addEventListener('click', takeIfOff);
+  range.addEventListener('keydown', (e) => (e.key === 'Enter' || e.key === ' ') && takeIfOff());
   off.addEventListener('click', () => {
     level = null;
     paint();
@@ -284,6 +301,42 @@ export function levelSlider({ label, words, ticks = words, value, onChange }) {
   paint();
   // --n = 단계 수: 눈금 단어를 슬라이더의 각 칸 위치에 맞추는 데 쓴다(CSS .scale-row)
   return h('div', { class: 'scale-row', style: `--n:${words.length}` }, h('div', { class: 'row between' }, label, off), range, h('div', { class: 'ticks' }, ...ticks.map((t) => h('span', null, t))), word);
+}
+
+// 숫자 슬라이더(9/26 — 원두 배전도 0.5~10, 로스터리 맛 지표 0~5·0~10, 0.5 단위). levelSlider 와 같은 배치.
+// value null = 선택 안 함(offLabel 이 있을 때만 — 없으면 늘 값이 있다). ticks = [[값, 글]] — 그 값 자리에 눈금 글을 둔다.
+// format(값) = 아래에 보일 글. 「선택 안 함」에서 손잡이 자리를 그냥 눌러도 그 값을 고른 것으로 본다(levelSlider 와 같은 처리).
+export function numberSlider({ label, min, max, step, value, ticks = [], format = String, offLabel = '선택 안 함', onChange }) {
+  let cur = value ?? null;
+  const mid = Math.round((min + max) / 2 / step) * step;
+  const range = h('input', { type: 'range', min, max, step, value: cur ?? mid, class: 'scale flat', 'aria-label': typeof label === 'string' ? label : label?.textContent ?? '' });
+  const word = h('div', { class: 'scale-word' });
+  const off = offLabel ? h('button', { type: 'button', class: 'chip' }, offLabel) : null;
+  const paint = () => {
+    range.classList.toggle('off', cur == null);
+    off?.classList.toggle('on', cur == null);
+    word.textContent = cur == null ? offLabel : format(cur);
+    paintScale(range);
+  };
+  const take = () => {
+    cur = Number(range.value);
+    paint();
+    onChange(cur);
+  };
+  range.addEventListener('input', take);
+  const takeIfOff = () => cur == null && take();
+  range.addEventListener('pointerup', takeIfOff);
+  range.addEventListener('change', takeIfOff);
+  range.addEventListener('click', takeIfOff);
+  range.addEventListener('keydown', (e) => (e.key === 'Enter' || e.key === ' ') && takeIfOff());
+  off?.addEventListener('click', () => {
+    cur = null;
+    paint();
+    onChange(null);
+  });
+  paint();
+  const tickRow = ticks.length ? h('div', { class: 'ticks abs', 'aria-hidden': 'true' }, ...ticks.map(([v, t]) => h('span', { style: `--at:${(v - min) / (max - min)}` }, t))) : null;
+  return h('div', { class: 'scale-row' }, h('div', { class: 'row between' }, label, off), range, tickRow, word);
 }
 
 // 뗄 때 실행하는 누름 영역(연타·실수 대책, 사용자 결정 9/24): 누르면 .pressing, 손가락을 밖으로 밀면 .abort 이고 놓으면 취소.

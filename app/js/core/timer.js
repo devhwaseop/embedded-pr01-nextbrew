@@ -65,9 +65,12 @@ export function view(state, plan, nowMs) {
 }
 
 // 다음 단계로 넘기거나(마지막 단계면) 끝낸다. 원래 state는 바꾸지 않는다.
-export function advance(state, plan, nowMs) {
+// atSec(선택) = 누른 시각 대신 이 시각에 넘긴 것으로 기록한다 — 깜박하고 못 눌렀을 때 레시피 시각으로 고치기(9/25).
+// 지금 단계를 시작한 시각보다 앞이거나 지금보다 뒤면 그 안으로 맞춘다.
+export function advance(state, plan, nowMs, { atSec = null } = {}) {
   if (state.status !== 'running') return state;
-  const t = round1(elapsedSec(state, nowMs));
+  const now = round1(elapsedSec(state, nowMs));
+  const t = atSec == null ? now : round1(Math.min(now, Math.max(state.stepStartsSec[state.stepIndex], atSec)));
   if (state.stepIndex >= plan.steps.length - 1) {
     return { ...state, endedSec: t, status: 'ended' };
   }
@@ -84,14 +87,26 @@ export function undoAdvance(state) {
 
 // ── 방치 확인(사용자 요청 9/24 — 넷플릭스 「아직 보고 계신가요?」 방식) ──────────────
 // 넷플릭스는 «조작 없이 일정 분량을 보면» 묻고 재생을 멈춘다(help.netflix.com/en/node/114059).
-// 추출에 옮기면: 지금 단계의 목표 시각을 CHECK 초 넘도록 아무 버튼도 누르지 않으면 묻는다.
-//   CHECK = 레시피 전체 시간의 절반(최소 60초). 쿠라스(2:10)는 65초 — 느린 드로다운은 넘기고, 잊어버린 것은 잡는다.
+// 추출에 옮기면: 지금 단계의 목표 시각이 지나고도 아무 버튼도 누르지 않으면 묻는다. 언제 묻나(9/25 사용자 요청으로 바꿈):
+//   - 마지막 단계가 아니면: 다음 단계 시간의 절반이 지났을 때(다음 푸어를 붓는 중인데 [다음 푸어]를 안 누른 것 — 깜박한 것).
+//     쿠라스: 뜸 들이기는 40 + 1차 푸어 30초의 절반 = 55초, 1차 푸어는 70 + 2차 푸어 60초의 절반 = 100초.
+//   - 마지막 단계: 드로다운이 레시피보다 늦는 일이 흔해 예전 기준 그대로 — 레시피 전체 시간의 절반(최소 60초). 쿠라스(2:10)는 65초.
+//   - [계속 추출]로 답했으면 그때부터 CHECK 초 뒤에 다시 묻는다.
 // 묻고도 ABANDON 초 동안 답이 없으면 기록 없이 끝낸다(취소와 같은 처리, 로그만 남김).
 // 타이머는 묻는 동안에도 멈추지 않는다 — 실제 시간이 흐르므로 기록 시각을 틀리게 만들지 않기 위해서다.
 export const STILL_HERE = { minSec: 60, ratio: 0.5, abandonSec: 300 };
 
 export function checkAfterSec(plan) {
   return Math.max(STILL_HERE.minSec, Math.round(plan.endSec * STILL_HERE.ratio));
+}
+
+// 단계 i 의 목표 시각이 지나고 몇 초 뒤에 묻나
+export function askGapSec(plan, i) {
+  const last = plan.steps.length - 1;
+  if (i >= last) return checkAfterSec(plan);
+  const nextStart = plan.steps[i + 1].startSec;
+  const nextEnd = i + 1 === last ? plan.endSec : plan.steps[i + 2].startSec;
+  return Math.max(5, Math.round((nextEnd - nextStart) / 2));
 }
 
 // phase: 'ok' | 'ask'(물어볼 때) | 'abandon'(답이 없어 끝낼 때)
@@ -101,7 +116,7 @@ export function presence(state, plan, nowMs) {
   const i = state.stepIndex;
   const targetSec = i === plan.steps.length - 1 ? plan.endSec : plan.steps[i + 1].startSec;
   // [계속 추출]로 답했으면 그때부터 다시 CHECK 초 뒤에 묻는다
-  const askAtSec = Math.max(targetSec + every, state.ackAtSec != null ? state.ackAtSec + every : -Infinity);
+  const askAtSec = Math.max(targetSec + askGapSec(plan, i), state.ackAtSec != null ? state.ackAtSec + every : -Infinity);
   const stopAtSec = askAtSec + STILL_HERE.abandonSec;
   const t = elapsedSec(state, nowMs);
   const phase = t < askAtSec ? 'ok' : t < stopAtSec ? 'ask' : 'abandon';

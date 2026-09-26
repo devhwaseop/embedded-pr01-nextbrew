@@ -4,6 +4,8 @@
 // (pourSec 가 없는 레시피는 다음 단계 시작까지 고르게). 이것은 타이머의 «지금쯤 저울 값»과 같은 기준선이다.
 // 실제선은 저울을 잰 값이 아니다 — 같은 붓기를 «실제로 누른 시각»에 맞춰 옮긴 선이다. 화면에도 그렇게 밝힌다.
 
+import { timerOf } from './schema.js';
+
 function curve(segments, endSec) {
   const pts = [[0, 0]];
   let cum = 0;
@@ -30,7 +32,7 @@ export function planPoints(plan) {
 export function brewPlanPoints(b) {
   const pourSec = b.recipe.snapshot?.pourSec ?? null;
   return curve(
-    b.timer.steps.map((s) => ({ start: s.plannedStartSec, end: s.plannedEndSec, target: s.targetCumG, pourSec })),
+    timerOf(b).steps.map((s) => ({ start: s.plannedStartSec, end: s.plannedEndSec, target: s.targetCumG, pourSec })),
     b.timer.plannedTotalSec,
   );
 }
@@ -39,10 +41,10 @@ export function brewPlanPoints(b) {
 export function brewActualPoints(b) {
   const pourSec = b.recipe.snapshot?.pourSec ?? null;
   return curve(
-    b.timer.steps
+    timerOf(b).steps
       .filter((s) => s.actualStartSec != null && s.actualEndSec != null)
       .map((s) => ({ start: s.actualStartSec, end: s.actualEndSec, target: s.targetCumG, pourSec })),
-    b.timer.totalSec,
+    timerOf(b).totalSec,
   );
 }
 

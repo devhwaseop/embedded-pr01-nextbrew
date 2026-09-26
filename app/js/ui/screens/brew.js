@@ -9,16 +9,18 @@ import { allRecipes, findRecipe } from '../../core/recipeBook.js';
 import { buildPlan, scaleAdvice, formatRatio, stepHint, HINT_SOURCES, recipeTags } from '../../core/recipe.js';
 import { startBrew, readyBrew, view, advance, undoAdvance, cancel, summarize, presence, acknowledge, elapsedSec } from '../../core/timer.js';
 import { conditionRows, stepRows, beanFacts } from '../../core/facts.js';
-import { WORDS, END_STATE_WORDS, endStateKey } from '../../core/words.js';
+import { WORDS, END_STATE_WORDS, endStateKey, josa, DECAF_ASSIST } from '../../core/words.js';
 import {
-  createBrew, newId, round1, formatSec, grindActual, formatDelta, timingVerdict, netServerWeight, measuredDilution, dilutionView,
-  beanStock, daysSince, DRIPPERS, FILTERS, POUR_METHODS, END_STATES,
+  createBrew, newId, round1, formatSec, grindActual, formatDelta, timingVerdict, netServerWeight, linkWeights, dilutionView,
+  beanStock, daysSince, timerOf, DRIPPERS, FILTERS, POUR_METHODS, END_STATES,
 } from '../../core/schema.js';
 import { findPrevious, compareTimer } from '../../core/diff.js';
 import { logEvent } from '../../core/log.js';
 import { keepAwake, releaseAwake } from '../../platform/wakelock.js';
 import { brewNotFound, adviceView } from './records.js';
 import { advicePatch, lastAdvised } from '../../core/adviceImport.js';
+import { measureImportButton, measureSummary, measureView } from '../measureImport.js';
+import { measurementOf } from '../../core/grindMeasure.js';
 
 // 문장 끝(. ! ?) 다음의 띄어쓰기를 줄바꿈으로
 export function sentenceLines(text) {
@@ -201,17 +203,29 @@ export function prepScreen() {
       aiAdviceCard(recipe, grinder),
       section(
         '분쇄',
+        decafAssist(grinder),
         grinders.length
           ? field('그라인더', h('select', { onChange: (e) => set({ grinderId: e.target.value }) }, ...grinders.map((g) => h('option', { value: g.id, selected: g.id === d.grinderId }, g.name))))
           : h('div', { class: 'hint' }, '등록된 그라인더가 없습니다. 영점을 쓰려면 설정에서 등록하세요.'),
-        // 그라인더에 보이는 값을 넣으면 영점을 반영한 값을 옆에 보인다(사용자 요청 9/25 — 「실제 125클릭」의 단위는 항목 이름에 있어 뺐다)
+        // 그라인더 표시값을 넣으면 영점 반영값을 아래에 보인다(사용자 요청 9/25 · 용어 9/26 결정)
         field(termOf(WORDS.grindDial), stepper({ value: d.dial, step: 1, min: 0, max: 999, onChange: (v) => set({ dial: v }) }), grindLine(grinder)),
         // 보조값(사용자 결정 9/24): 사진으로 잰 값이나 변환 사이트의 추정치를 직접 적는다. 앱은 이 값으로 µm 를 만들지 않고,
         // 같은 그라인더 기록이 쌓이면 «클릭당 µm» 추정에만 쓴다(core/compass.js).
         field(term('참고 µm', '선택 · 사진 측정값이나 변환 사이트 추정치'), stepper({ value: d.um, step: 10, min: 0, max: 3000, unit: 'µm', onChange: (v) => set({ um: v }, false) })),
         field(term('µm 표준편차', '선택 · 사진 측정 결과에 함께 나옴'), stepper({ value: d.umSd, step: 10, min: 0, max: 3000, unit: 'µm', onChange: (v) => set({ umSd: v }, false) })),
+        // 측정 결과 불러오기(사용자 결정 9/26): 언스페셜티 CSV·사진 → 값 확인 → Click 뜻 확인 → 그라인더 표시값·참고 µm·표준편차를 채운다
+        ...measureImportButton({ grinder, via: 'prep', onDone: (m) => set({ dial: m.dial, um: m.meanUm, umSd: m.sdUm, measurement: m }) }),
+        d.measurement
+          ? h(
+              'details',
+              { class: 'sub-details' },
+              h('summary', null, `불러온 측정: ${measureSummary(d.measurement)}`),
+              measureView(d.measurement),
+              h('button', { type: 'button', class: 'inline-btn quiet', onClick: () => set({ measurement: null }) }, '측정 떼기'),
+            )
+          : null,
         linkButton({ href: 'https://community.unspecialty.com/compass/grinder', label: '사진으로 분쇄 재기 · 언스페셜티', external: true }),
-        linkButton({ href: '#/settings', label: '그라인더 등록·영점·클릭당 µm', returnToPrep: true }),
+        linkButton({ href: '#/grinders', label: '그라인더 등록·영점·클릭당 µm', returnToPrep: true }),
       ),
       section(
         '도구',
@@ -282,13 +296,38 @@ export function prepScreen() {
     return h('span', { class: short ? 'warn-text' : '' }, facts.join(' · '), short ? ` — 이번 원두량(${doseG}g)보다 적습니다` : '');
   }
 
-  // 「실제 125 · 영점 −3 반영」: 다이얼에 보이는 값 + 영점 = 실제 위치
+  // 디카페인 보조(9/26 사용자 요청): 고른 원두가 디카페인이면 분쇄·원두량을 바꾸는 안내와 한 번 누르면 맞추는 단추.
+  // 분쇄는 같은 표시값에서 더 곱게 갈린다는 연구(가운데 입자 8~38µm 작음)의 가운데쯤인 약 20µm 굵게 — 클릭당 µm 를 알면 클릭 수로.
+  // 원두량 +0.5~1g 은 로스터리 안내 글 수준이라 그렇게 밝힌다. 값은 누를 때만 바뀐다(자동으로 바꾸지 않는다).
+  function decafAssist(grinder) {
+    const bean = d.beanId ? store.get('beans', d.beanId) : null;
+    if (!bean?.decaf) return null;
+    const upc = grinder ? umPerClickFor(grinder, store.brews()) : null;
+    const clicks = upc?.value ? Math.sign(upc.value) * Math.max(1, Math.round(DECAF_ASSIST.grindUm / Math.abs(upc.value))) : null;
+    return h(
+      'div',
+      { class: 'notice decaf-note' },
+      h('div', null, '디카페인 원두 — 같은 표시값에서 더 곱게 갈립니다.'),
+      h('div', { class: 'hint' }, clicks ? `평소보다 약 ${DECAF_ASSIST.grindUm}µm 굵게(${Math.abs(clicks)}클릭) 시작해 보세요.` : `평소보다 조금 굵게(약 ${DECAF_ASSIST.grindUm}µm) 시작해 보세요. 그라인더에 클릭당 µm 를 적으면 클릭 수로 알려 드립니다.`),
+      h('div', { class: 'hint' }, `맛이 옅게 느껴지면 원두를 ${DECAF_ASSIST.doseG}~1g 늘려 보세요(로스터리 안내 글 기준 — 연구로 확인된 값은 아닙니다).`),
+      h(
+        'div',
+        { class: 'row wrap' },
+        clicks && d.dial != null
+          ? h('button', { type: 'button', class: 'inline-btn', onClick: () => { logEvent('prep.decafAssist', { action: 'grind', clicks, from: d.dial, to: d.dial + clicks, umPerClick: upc.value }); set({ dial: d.dial + clicks }); } }, `분쇄 ${Math.abs(clicks)}클릭 굵게`)
+          : null,
+        h('button', { type: 'button', class: 'inline-btn', onClick: () => { logEvent('prep.decafAssist', { action: 'dose', from: d.doseG, to: d.doseG + DECAF_ASSIST.doseG }); set({ doseG: d.doseG + DECAF_ASSIST.doseG, iceG: null }); } }, `원두 +${DECAF_ASSIST.doseG}g`),
+      ),
+    );
+  }
+
+  // 「영점 반영값 122 · 영점 −3」: 그라인더 표시값 + 영점 = 영점 반영값(용어는 사용자 결정 9/26 「그라인더 표시값 / 영점 반영값」)
   function grindLine(grinder) {
-    if (d.dial == null) return '그라인더에 보이는 값을 넣으세요.';
+    if (d.dial == null) return '그라인더 표시값을 넣으세요.';
     const z = grinder?.zeroOffset ?? 0;
-    if (!grinder) return '그라인더를 등록하면 영점을 반영해 보여 줍니다.';
-    if (!z) return `실제 ${d.dial} · 영점 0`;
-    return h('span', null, h('b', null, `실제 ${grindActual(d.dial, z)}`), ` · 영점 ${z > 0 ? '+' : '−'}${Math.abs(z)} 반영`);
+    if (!grinder) return '그라인더를 등록하면 영점 반영값을 보여 줍니다.';
+    if (!z) return `영점 반영값 ${d.dial} · 영점 0`;
+    return h('span', null, h('b', null, `영점 반영값 ${grindActual(d.dial, z)}`), ` · 영점 ${z > 0 ? '+' : '−'}${Math.abs(z)}`);
   }
 
   // 레시피 필터(사용자 결정 9/24 — 언스페셜티 레시피 목록의 드리퍼별 필터 참고): 드리퍼가 두 종류 이상일 때만 보인다
@@ -304,7 +343,7 @@ export function prepScreen() {
   }
 
   // 지난번 제안(사용자 결정 9/24 — 커피 컴퍼스): 같은 레시피(원두를 골랐으면 같은 원두)의 가장 최근 «설문한» 기록에서 낸 제안.
-  // [제안대로 맞추기]는 그 기록의 값에서 출발한다: 다이얼 = 그때 실제 클릭 + 제안 클릭(지금 영점 반영), 원두 = 그때 + 제안 g, 물 = 그때 그대로.
+  // [제안대로 맞추기]는 그 기록의 값에서 출발한다: 그라인더 표시값 = 그때 영점 반영값 + 제안 클릭 − 지금 영점, 원두 = 그때 + 제안 g, 물 = 그때 그대로.
   function adviceCard(recipe, grinder) {
     const prev = lastSurveyed(store.brews(), { recipeId: recipe.id, beanId: d.beanId });
     if (!prev) return null;
@@ -334,8 +373,9 @@ export function prepScreen() {
     const actionable = canDial || adv.doseDeltaG;
     return section(
       '지난번 제안',
-      h('div', { class: 'hint' }, `${fmtDateTime(prev.timer.startedAt)} 추출의 설문 기준${roast ? ` · ${roast}` : ''}`),
+      h('div', { class: 'hint' }, `${fmtDateTime(prev.timer.startedAt)} 추출의 테이스팅 노트 기준${roast ? ` · ${roast}` : ''}`),
       h('ul', { class: 'advice' }, ...adv.lines.map((l) => h('li', null, l))),
+      canDial ? h('div', { class: 'hint' }, `그라인더 표시값: ${pg.dial} → ${pg.dial + (pg.zeroOffset || 0) + adv.clicks - (grinder?.zeroOffset || 0)}`) : null,
       adv.doseDeltaG ? h('div', { class: 'hint' }, ratioChange(prev.conditions, adv.doseDeltaG)) : null,
       adv.grindUm && !canDial
         ? h('div', { class: 'hint' }, sameGrinder ? '클릭당 µm 를 알면 클릭 수로 알려 드립니다(설정 → 그라인더, 또는 참고 µm 를 두 눈금 이상에서 기록).' : '지난번과 그라인더가 달라 분쇄는 µm 로만 보입니다.')
@@ -365,7 +405,7 @@ export function prepScreen() {
       'AI 제안',
       h('div', { class: 'hint' }, `${fmtDateTime(from.timer.startedAt)} 추출에 넣은 AI 답 기준`),
       ...adviceView(a, from),
-      dialSkipped ? h('div', { class: 'hint' }, '제안이 달린 기록과 그라인더가 달라 다이얼은 바꾸지 않습니다.') : null,
+      dialSkipped ? h('div', { class: 'hint' }, '제안이 달린 기록과 그라인더가 달라 그라인더 표시값은 바꾸지 않습니다.') : null,
       Object.keys(patch).length ? h('button', { type: 'button', onClick: apply }, 'AI 제안대로 맞추기') : null,
     );
   }
@@ -415,7 +455,7 @@ export function prepScreen() {
       style: d.style,
       tempC: d.tempC,
       grind: d.dial != null || grinder
-        ? { grinderId: grinder?.id ?? null, grinderName: grinder?.name ?? '', dial: d.dial, zeroOffset: grinder?.zeroOffset ?? 0, um: d.um ?? null, umSd: d.umSd ?? null }
+        ? { grinderId: grinder?.id ?? null, grinderName: grinder?.name ?? '', dial: d.dial, zeroOffset: grinder?.zeroOffset ?? 0, um: d.um ?? null, umSd: d.umSd ?? null, measurement: d.measurement ?? null }
         : null,
       dripper: d.dripper,
       filter: d.filter,
@@ -501,18 +541,20 @@ export function timerScreen() {
   const C = 2 * Math.PI * R;
   const arc = svg('circle', { cx: 100, cy: 100, r: R, class: 'ring-fg', 'stroke-dasharray': C, 'stroke-dashoffset': 0, transform: 'rotate(-90 100 100)' });
   const ring = svg('svg', { viewBox: '0 0 200 200', class: 'ring' }, svg('circle', { cx: 100, cy: 100, r: R, class: 'ring-bg' }), arc);
-  const num = h('div', { class: 'ring-num' });
+  // 원 안(사용자 요청 9/25 — 핵심을 원 안에 모은다): 큰 숫자 + 작은 「초」 / 「남음」 / 붓는 동안 빨간 알약 「7초 · 42g」 / 맨 아래 「100g까지」
+  const num = h('span', { class: 'ring-num' });
+  const unit = h('span', { class: 'ring-unit' }, '초');
   const sub = h('div', { class: 'ring-sub' });
-  // 붓는 동안 «지금쯤 저울 값»을 원 안에 크게(사용자 요청 9/25 — 아래 작은 글씨로는 보면서 붓기 어려웠다)
-  const pourNow = h('div', { class: 'ring-pour', 'aria-live': 'off' });
-  const stepName = h('div', { class: 'ring-step' });
+  const pourLeft = h('span');
+  const pourG = h('span');
+  const pourPill = h('div', { class: 'ring-pour hidden', 'aria-live': 'off' }, pourLeft, h('span', { class: 'ring-pour-dot' }, '·'), pourG);
+  const targetIn = h('div', { class: 'ring-target' });
+  // 단계 이름은 원 밖 아래에 크게(사용자 요청 9/25)
+  const stepName = h('div', { class: 'step-name' });
   const elapsed = h('div', { class: 'elapsed' });
   // 전체 진행 막대(사용자 결정 9/24 — 언스페셜티 진행 화면의 「총 진행상태」 참고): 레시피 종료 목표까지 얼마나 왔나
   const totalFill = h('div', { class: 'total-fill' });
   const totalBar = h('div', { class: 'total-bar', role: 'progressbar', 'aria-label': '전체 진행', 'aria-valuemin': 0, 'aria-valuemax': plan.endSec }, totalFill);
-  const targetMain = h('div');
-  const targetSub = h('div', { class: 'pour-sub' });
-  const target = h('div', { class: 'pour-target' }, targetMain, targetSub);
   const hint = h('div', { class: 'step-hint' });
   const next = h('div', { class: 'next' });
   const infoText = h('span');
@@ -529,23 +571,33 @@ export function timerScreen() {
   };
   const nextBtn = pressButton({ label: '다음 푸어 ›', className: 'primary big', onPress: () => primary('button'), onAbort: () => aborted('button') });
   const cancelBtn = h('button', { class: 'big', onClick: () => (state.status === 'ready' ? onBack() : onCancel()) }, '취소');
-  // 방치 확인 창(넷플릭스 「아직 보고 계신가요?」 방식)
+  // 방치 확인 창(넷플릭스 「아직 보고 계신가요?」 방식). 9/25: 다음 푸어 시간의 절반이 지나도록 안 누르면 뜬다(core/timer.js).
+  // 마지막 단계가 아니면 깜박한 것이 거의 확실해 [레시피 시각에 넘긴 걸로 고치기]를 첫 번째로 둔다.
+  const stillTitle = h('h3');
   const stillText = h('p');
-  const still = h(
-    'div',
-    { class: 'modal-back hidden' },
-    h(
-      'div',
-      { class: 'modal', role: 'alertdialog', 'aria-label': '아직 추출 중인가요?' },
-      h('h3', null, '아직 추출 중인가요?'),
-      stillText,
-      h('div', { class: 'row' }, h('button', { type: 'button', onClick: onStillCancel }, '기록 없이 끝내기'), h('button', { type: 'button', class: 'primary', onClick: onStillHere }, '계속 추출')),
-    ),
-  );
+  const stillBtns = h('div', { class: 'still-actions' });
+  const still = h('div', { class: 'modal-back hidden' }, h('div', { class: 'modal', role: 'alertdialog', 'aria-label': '방치 확인' }, stillTitle, stillText, stillBtns));
+  let stillFor = null; // 창을 어느 단계에 맞춰 그렸나
+  function buildStill(i) {
+    stillFor = i;
+    const nx = plan.steps[i + 1];
+    if (!nx) {
+      stillTitle.textContent = '아직 추출 중인가요?';
+      fill(stillBtns, h('button', { type: 'button', class: 'primary', onClick: onStillHere }, '계속 추출'), h('button', { type: 'button', onClick: onStillCancel }, '기록 없이 끝내기'));
+      return;
+    }
+    stillTitle.textContent = `${josa(nx.label, '을', '를')} 누르지 않았어요`;
+    fill(
+      stillBtns,
+      h('button', { type: 'button', class: 'primary', onClick: onStillFix }, `레시피 시각(${formatSec(nx.startSec)})에 넘긴 걸로 고치기`),
+      h('button', { type: 'button', onClick: onStillHere }, `아직 ${plan.steps[i].label} 중이에요`),
+      h('button', { type: 'button', onClick: onStillCancel }, '기록 없이 끝내기'),
+    );
+  }
   let askedAt = null; // 같은 질문을 로그에 한 번만 남기려고
   let stopped = false;
   // 원 전체 = 누름 영역(버튼과 같은 규칙: 뗄 때 실행, 밖으로 밀면 취소). 누르면 살짝 눌리고 누른 자리에서 물결이 퍼진다.
-  const ringWrap = h('div', { class: 'ring-wrap press-ring', role: 'button', tabindex: 0, 'aria-label': '시작' }, ring, h('div', { class: 'ring-center' }, num, sub, pourNow, stepName));
+  const ringWrap = h('div', { class: 'ring-wrap press-ring', role: 'button', tabindex: 0, 'aria-label': '시작' }, ring, h('div', { class: 'ring-center' }, h('div', { class: 'ring-num-row' }, num, unit), sub, pourPill, targetIn));
   pressable(ringWrap, {
     onPress: () => primary('ring'),
     onAbort: () => aborted('ring'),
@@ -569,7 +621,7 @@ export function timerScreen() {
     h('div', { class: 'timer-head' }, h('div', { class: 'recipe-name' }, active.recipe.name), elapsed),
     totalBar,
     ringWrap,
-    target,
+    stepName,
     hint,
     next,
     readyNote,
@@ -609,7 +661,13 @@ export function timerScreen() {
         askedAt = p.askAtSec;
         logEvent('brew.stillAsk', { stepIndex: state.stepIndex, stepLabel: plan.steps[state.stepIndex].label, overSec: round1(p.overSec) }, { brewId, now });
       }
-      stillText.textContent = `목표 시각을 ${Math.floor(p.overSec)}초 넘겼어요. ${formatSec(p.stopAtSec - elapsedSec(state, now))} 안에 답이 없으면 기록 없이 끝냅니다.`;
+      if (stillFor !== state.stepIndex) buildStill(state.stepIndex);
+      const t = elapsedSec(state, now);
+      const nx = plan.steps[state.stepIndex + 1];
+      const left = `${formatSec(p.stopAtSec - t)} 안에 답이 없으면 기록 없이 끝냅니다.`;
+      stillText.textContent = nx
+        ? `${nx.label} 시작(${formatSec(nx.startSec)})에서 ${Math.floor(t - nx.startSec)}초 지났어요. 깜박했다면 레시피 시각에 넘긴 것으로 고칠 수 있어요. ${left}`
+        : `목표 시각을 ${Math.floor(p.overSec)}초 넘겼어요. ${left}`;
     }
     const v = view(state, plan, now);
     const ended = state.status === 'ended';
@@ -621,13 +679,12 @@ export function timerScreen() {
       elapsed.textContent = formatSec(0);
       totalFill.style.width = '0%';
       setNum(String(Math.ceil(v.remainingSec)));
-      sub.textContent = '초 동안';
-      pourNow.textContent = '';
+      unit.classList.remove('hidden');
+      sub.textContent = '동안';
+      pourPill.classList.add('hidden');
       arc.setAttribute('stroke-dashoffset', '0');
       stepName.textContent = v.step.label;
-      target.classList.remove('pouring', 'waiting');
-      targetMain.textContent = `${v.step.targetCumG}g까지 붓기`;
-      targetSub.textContent = '';
+      targetIn.textContent = `${v.step.targetCumG}g까지 붓기`;
       hint.textContent = sentenceLines(v.step.hint);
       next.textContent = v.next ? `다음: ${v.next.label} · ${v.next.targetCumG}g까지 (${formatSec(v.next.startSec)})` : '';
       nextBtn.setLabel('시작');
@@ -640,36 +697,32 @@ export function timerScreen() {
     totalFill.style.width = `${Math.min(100, (v.elapsed / plan.endSec) * 100)}%`;
     totalBar.classList.toggle('over', v.elapsed > plan.endSec);
     totalBar.setAttribute('aria-valuenow', String(Math.floor(v.elapsed)));
+    // 큰 숫자 옆에 작게 「초」, 아래에 「남음」(사용자 요청 9/25)
+    unit.classList.toggle('hidden', ended);
     if (ended) {
       setNum('종료');
       sub.textContent = '';
     } else if (v.overSec > 0) {
       setNum(`+${Math.floor(v.overSec)}`);
-      sub.textContent = '초 지남';
+      sub.textContent = '지남';
     } else {
       setNum(String(Math.ceil(v.remainingSec)));
-      sub.textContent = '초 남음';
+      sub.textContent = '남음';
     }
     root.classList.toggle('over', !ended && v.overSec > 0);
     ringWrap.setAttribute('aria-label', ended ? '종료됨' : v.isLast ? '종료' : '다음 푸어');
     arc.setAttribute('stroke-dashoffset', String(C * v.progress));
     stepName.textContent = v.step.label;
-    // 붓는 구간: 목표 g을 파스텔 빨강으로 은은하게 강조하고, 고르게 부을 때의 «지금쯤 저울 값»과 속도를 함께 보인다.
-    // 붓는 시간이 지나면 「붓기 끝 · 기다리는 중」으로 바꾼다(9/24 — 10초 뒤에도 「붓습니다」가 남아 상황과 안 맞던 것).
-    target.classList.toggle('pouring', !ended && v.pouring);
-    target.classList.toggle('waiting', ended || v.pourDone);
-    // 원 안: 붓는 동안만 「지금 85g」. 아래 막대에는 목표와 속도·남은 붓기 시간을 둔다.
-    pourNow.textContent = !ended && v.pouring ? `지금 ${v.expectedNowG}g` : '';
-    if (!ended && v.pouring) {
-      targetMain.textContent = `${v.step.targetCumG}g까지 붓기`;
-      targetSub.textContent = `초당 ${v.pourRateGps}g · ${Math.ceil(v.pourLeftSec)}초 안에`;
-    } else if (ended || v.pourDone) {
-      targetMain.textContent = `${v.step.targetCumG}g 붓기 끝`;
-      targetSub.textContent = ended ? '' : '기다리는 중';
-    } else {
-      targetMain.textContent = `${v.step.targetCumG}g까지 붓기`;
-      targetSub.textContent = '';
+    // 붓는 구간(9/25 원 안으로): 빨간 알약 「7초 · 42g」 = 붓기 남은 초 · 고르게 부을 때의 «지금쯤 저울 값», 맨 아래 「100g까지」.
+    // 붓는 시간이 지나면 알약을 숨기고 맨 아래를 「100g 붓기 끝」으로(9/24 — 10초 뒤에도 「붓습니다」가 남아 상황과 안 맞던 것).
+    const pouring = !ended && v.pouring;
+    pourPill.classList.toggle('hidden', !pouring);
+    if (pouring) {
+      pourLeft.textContent = `${Math.ceil(v.pourLeftSec)}초`;
+      pourG.textContent = `${v.expectedNowG}g`;
     }
+    targetIn.classList.toggle('done', ended || v.pourDone);
+    targetIn.textContent = ended || v.pourDone ? `${v.step.targetCumG}g 붓기 끝` : `${v.step.targetCumG}g까지`;
     // 문장마다 줄을 바꾼다(사용자 요청 9/24 — 「~단계입니다.」 다음에서 끊기게). CSS .step-hint 가 white-space: pre-line
     hint.textContent = sentenceLines(v.step.hint);
     // 마지막 단계: 떼는 때 = 물줄기가 방울로 바뀔 때(사용자 질문 9/25). 레시피 시각은 기다릴 시각이 아니라 비교할 목표다.
@@ -753,6 +806,22 @@ export function timerScreen() {
     tick();
   }
 
+  // 방치 확인에서 [레시피 시각에 넘긴 걸로 고치기]: 깜박하고 못 누른 [다음 푸어]를 레시피 시각으로 기록한다(되돌리기 가능)
+  function onStillFix() {
+    if (state.status !== 'running' || state.stepIndex >= plan.steps.length - 1) return;
+    const now = Date.now();
+    const from = state.stepIndex;
+    const at = plan.steps[from + 1].startSec;
+    const lateSec = round1(elapsedSec(state, now) - at);
+    state = advance(state, plan, now, { atSec: at });
+    undoStack.push({ at: now });
+    saveActive({ ...active, state });
+    const actualSec = state.stepStartsSec[from + 1];
+    logEvent('brew.step', { from: plan.steps[from].label, to: plan.steps[from + 1].label, plannedSec: at, actualSec, deltaSec: round1(actualSec - at), verdict: 'ok', via: 'stillAsk', backdated: true, pressedLateSec: lateSec }, { brewId, now });
+    showInfo(`${plan.steps[from + 1].label} 시작을 레시피 시각 ${formatSec(at)}으로 고쳤습니다`, 'ok');
+    tick();
+  }
+
   function onStillHere() {
     const now = Date.now();
     const p = presence(state, plan, now);
@@ -816,7 +885,7 @@ export function timerTable(b) {
     { class: 'plan' },
     h('tr', null, h('th', null, '단계'), h('th', null, '실제 끝'), h('th', null, '레시피'), h('th', null, '판정')),
     ...stepRows(b).map((s) =>
-      h('tr', null, h('td', null, s.label), h('td', null, formatSec(s.actualEndSec)), h('td', { class: 'muted' }, formatSec(s.plannedEndSec)), h('td', { class: `verdict ${s.verdict?.kind ?? ''}` }, s.verdict?.text ?? '—')),
+      h('tr', null, h('td', null, s.label), h('td', null, formatSec(s.actualEndSec), s.corrected ? h('span', { class: 'term-sub' }, '고침') : null), h('td', { class: 'muted' }, formatSec(s.plannedEndSec)), h('td', { class: `verdict ${s.verdict?.kind ?? ''}` }, s.verdict?.text ?? '—')),
     ),
   );
 }
@@ -849,44 +918,44 @@ export function resultScreen(id) {
   };
 
   // 서버 무게(사용자 요청 9/25): 스위치는 처음부터 켜져 있다. 재지 않으려면 끄거나 칸을 비워 두면 된다.
-  // 가수 전·후 총무게는 둘 다 서버를 올린 채 잰 저울 값이다. 둘이 있으면 가수 = 후 − 전(서버 무게는 지워진다).
-  // 커피 원액 무게(서버 제외)는 서버 자체 무게를 알 때만 보인다.
+  // 9/26: 무게 칸끼리 서로 따라 바뀐다(core/schema.js linkWeights) — 가수 전 + 가수 = 가수 후, 가수 후 + 추가 얼음 = 얼음 넣은 뒤.
+  // 어느 칸을 고쳐도 칸이 사라지지 않는다(전에는 두 무게를 넣으면 가수 칸이 값만 보이는 칸으로 바뀌었다).
+  const iced = b.conditions.style !== 'hot';
   function lastServer(servers) {
     const lastId = store.brews().find((x) => x.result?.server?.id)?.result.server.id;
     const pick = servers.find((x) => x.id === lastId) ?? servers[0];
     return pick ? { id: pick.id, name: pick.name, tareG: pick.tareG } : null;
   }
-  // 무게를 처음 넣을 때 화면에 보이던 서버를 기록에 함께 남긴다
-  function saveWeight(key, v) {
-    if (!b.result.server) {
+  // 칸 하나를 고치면 따라 바뀌는 칸까지 한 번에 저장한다(로그는 고친 칸 하나 + 따라 바뀐 칸들)
+  function setWeight(key, v) {
+    if (!b.result.server && key !== 'dilutionG' && key !== 'iceAddedG') {
       const pick = lastServer(store.list('servers'));
-      if (pick) save('server', pick);
+      if (pick) b.result.server = pick; // 무게를 처음 넣을 때 화면에 보이던 서버를 기록에 함께 남긴다
     }
-    save(key, v);
-    const m = measuredDilution(b.result);
-    if (m != null && m !== b.result.dilutionG) save('dilutionG', m); // 두 무게로 잰 가수를 기록값으로
+    const changed = linkWeights(b.result, key, v, { iceOn: iced && Boolean(b.result.iceAddedOn) });
+    Object.assign(b.result, { [key]: v }, changed);
+    store.put('brews', b);
+    logEvent('result.update', { field: key, value: v, linked: Object.fromEntries(Object.entries(changed).filter(([k]) => k !== key)) }, { brewId: b.id });
     draw();
   }
+  const weightOn = () => !b.result.serverOff;
 
   function serverBlock() {
     const r = b.result;
-    const on = !r.serverOff;
     const servers = store.list('servers');
     const sw = toggle({
-      checked: on,
+      checked: weightOn(),
       label: '서버 무게 재기',
       sub: { on: '서버를 올린 채 잰 저울 값을 적습니다. 비워 두어도 됩니다.', off: '무게를 적지 않고 가수만 직접 적습니다.' },
       onChange: (v) => {
         save('serverOff', !v);
         if (!v) {
-          save('serverWeightG', null);
-          save('serverAfterG', null);
-          save('server', null);
+          for (const k of ['serverWeightG', 'serverAfterG', 'serverAfterIceG', 'server']) save(k, null);
         }
         draw();
       },
     });
-    if (!on) return [sw];
+    if (!weightOn()) return [sw];
     const srv = r.server ?? lastServer(servers);
     const sel = srv?.id ?? '__custom__';
     const select = h(
@@ -904,28 +973,114 @@ export function resultScreen(id) {
     const net = netServerWeight({ ...r, server: srv });
     return [
       sw,
-      field('서버', select, servers.length ? null : h('span', null, '자주 쓰는 서버는 ', h('a', { href: '#/settings' }, '설정'), '에서 등록해 두면 다음부터 고르기만 하면 됩니다.')),
+      field('서버', select, servers.length ? null : h('span', null, '자주 쓰는 서버는 ', h('a', { href: '#/servers' }, '서버 등록'), '에 넣어 두면 다음부터 고르기만 하면 됩니다.')),
       sel === '__custom__'
         ? field('서버 자체 무게', stepper({ value: srv?.tareG, step: 1, min: 0, max: 3000, unit: 'g', onChange: (v) => { save('server', { ...(r.server ?? { id: null, name: '' }), tareG: v }); draw(); } }))
         : null,
-      field(termOf(WORDS.serverTotal), stepper({ value: r.serverWeightG, step: 1, min: 0, max: 3000, unit: 'g', onChange: (v) => saveWeight('serverWeightG', v) }),
+      field(termOf(WORDS.serverTotal), stepper({ value: r.serverWeightG, step: 1, min: 0, max: 3000, unit: 'g', onChange: (v) => setWeight('serverWeightG', v) }),
         net != null ? h('span', null, h('b', null, `${WORDS.netWeight.label} ${net}g`), ` · ${WORDS.netWeight.sub}`) : null),
-      field(termOf(WORDS.serverAfter), stepper({ value: r.serverAfterG, step: 1, min: 0, max: 5000, unit: 'g', onChange: (v) => saveWeight('serverAfterG', v) })),
     ];
   }
 
-  // 가수: 두 무게가 있으면 자동(고칠 수 없게 값만), 없으면 직접 적는다. 아래에 지금 비율과 계획 비율까지의 추천을 보인다.
+  // 가수(항상 보인다) · 가수 후 총무게(서버 무게를 잴 때)
   function dilutionBlock() {
+    const r = b.result;
+    return [
+      field(termOf(WORDS.dilution), stepper({ value: dilutionView(b).dilutionG, step: 1, min: 0, max: 1000, unit: 'g', onChange: (v) => setWeight('dilutionG', v ?? 0) }),
+        r.lastWeighed === 'after' && r.serverWeightG != null ? '가수 후 − 가수 전 총무게로 계산했습니다. 여기를 고치면 가수 후 총무게가 따라 바뀝니다.' : null),
+      weightOn() ? field(termOf(WORDS.serverAfter), stepper({ value: r.serverAfterG, step: 1, min: 0, max: 5000, unit: 'g', onChange: (v) => setWeight('serverAfterG', v) })) : null,
+    ];
+  }
+
+  // 추가 얼음(아이스, 사용자 요청 9/26 — 가수 아래, 처음엔 꺼짐). 끄면 «안 넣음»이 아니라 «기록 안 함(양 모름)»으로 공유한다
+  function iceBlock() {
+    if (!iced) return [];
+    const r = b.result;
+    const sw = toggle({
+      checked: Boolean(r.iceAddedOn),
+      label: WORDS.iceAdded.label,
+      sub: { on: '추출 뒤 서버나 잔에 더 넣은 얼음을 적습니다.', off: '적지 않으면 「넣었을 수 있지만 양은 모름」으로 남습니다.' },
+      onChange: (v) => {
+        save('iceAddedOn', v);
+        if (v) setWeight('iceAddedG', r.iceAddedG ?? 0);
+        else draw();
+      },
+    });
+    if (!r.iceAddedOn) return [sw];
+    return [
+      sw,
+      field(termOf(WORDS.iceAdded), stepper({ value: r.iceAddedG ?? 0, step: 1, min: 0, max: 1000, unit: 'g', onChange: (v) => setWeight('iceAddedG', v ?? 0) }),
+        r.iceLastWeighed === 'after' && r.serverAfterG != null ? '얼음 넣은 뒤 − 가수 후 총무게로 계산했습니다.' : null),
+      weightOn() ? field(termOf(WORDS.serverAfterIce), stepper({ value: r.serverAfterIceG, step: 1, min: 0, max: 5000, unit: 'g', onChange: (v) => setWeight('serverAfterIceG', v) })) : null,
+    ];
+  }
+
+  // 원두와 물의 비율(가수·추가 얼음 포함)과 계획 비율까지의 추천
+  function ratioBlock() {
     const dv = dilutionView(b);
-    const ctl = dv.measured
-      ? h('div', { class: 'field-value' }, `${dv.dilutionG}g`, h('span', { class: 'term-sub' }, '가수 후 − 가수 전 (자동 계산)'))
-      : stepper({ value: b.result.dilutionG, step: 1, min: 0, max: 1000, unit: 'g', onChange: (v) => { save('dilutionG', v ?? 0); draw(); } });
-    const lines = [h('div', null, h('b', null, `${WORDS.ratio.label}(가수 포함) ${formatRatio(dv.ratioNow)}`), ` · 물 모두 ${dv.waterNowG}g`)];
+    const what = dv.iceAddedG ? '가수·추가 얼음 포함' : '가수 포함';
+    const lines = [];
     if (Math.abs(dv.moreG) < 1) lines.push(h('div', null, `계획 비율(${formatRatio(dv.ratioTarget)})과 같습니다.`));
-    else if (dv.moreG > 0) lines.push(h('div', { class: 'row-line' }, `계획 비율 ${formatRatio(dv.ratioTarget)}까지 가수 ${Math.round(dv.moreG)}g 더 (가수 모두 ${Math.round(dv.needG)}g)`));
+    else if (dv.moreG > 0) lines.push(h('div', null, `계획 비율 ${formatRatio(dv.ratioTarget)}까지 가수 ${Math.round(dv.moreG)}g 더`));
     else lines.push(h('div', null, `계획 비율(${formatRatio(dv.ratioTarget)})보다 ${Math.round(-dv.moreG)}g만큼 연합니다.`));
     lines.push(h('div', null, '계획 비율 = 계획한 뜨거운 물 + 추천 얼음 + 레시피 가수'));
-    return field(termOf(WORDS.dilution), ctl, lines);
+    return field(`${WORDS.ratio.label}(${what})`, h('div', { class: 'field-value' }, formatRatio(dv.ratioNow), h('span', { class: 'term-sub' }, `물 모두 ${dv.waterNowG}g`)), lines);
+  }
+
+  // 누른 시각 고치기(사용자 요청 9/25, 정정 9/26 — 못 누른 경우만이 아니라 모든 단계를 사후에): 타이머 기록은 그대로 두고
+  // result.startShiftSec(시작 보정) · result.stepFix(단계별 «끝» 시각)를 겹쳐 본다(core/schema.js timerOf)
+  let fixOpen = false;
+  // 분쇄 측정(사용자 결정 9/26): 준비 화면에서 불러온 것이 없으면 여기서 이 기록에 붙인다(result.grindMeasurement)
+  function measureSection() {
+    const m = measurementOf(b);
+    const g = b.conditions.grind;
+    const grinder = g?.grinderId ? store.get('grinders', g.grinderId) : null;
+    return section(
+      '분쇄 측정',
+      m ? h('div', { class: 'hint' }, measureSummary(m)) : h('div', { class: 'hint' }, '언스페셜티에서 분쇄를 잰 결과(CSV 또는 결과 화면 사진)를 이 기록에 붙일 수 있습니다.'),
+      m ? measureView(m) : null,
+      ...measureImportButton({ grinder: grinder ?? (g ? { id: null, name: g.grinderName, zeroOffset: g.zeroOffset } : null), via: 'result', onDone: (mm) => { save('grindMeasurement', mm); draw(); } }),
+      linkButton({ href: 'https://community.unspecialty.com/compass/grinder', label: '사진으로 분쇄 재기 · 언스페셜티', external: true }),
+    );
+  }
+
+  function fixEditor() {
+    const t = timerOf(b);
+    const fix = b.result.stepFix ?? {};
+    const shift = b.result.startShiftSec ?? 0;
+    const changed = shift !== 0 || Object.keys(fix).length > 0;
+    const setFix = (i, v) => {
+      const next = { ...fix };
+      const base = b.timer.steps[i].actualEndSec == null ? null : round1(b.timer.steps[i].actualEndSec + shift);
+      if (v == null || v === base) delete next[i];
+      else next[i] = v;
+      const ends = b.timer.steps.map((s, k) => next[k] ?? (s.actualEndSec == null ? null : s.actualEndSec + shift));
+      if (ends.some((e, k) => k > 0 && e != null && ends[k - 1] != null && e <= ends[k - 1])) {
+        toast('앞 단계가 끝난 시각보다 늦어야 합니다.');
+        return draw();
+      }
+      save('stepFix', next);
+      draw();
+    };
+    return h(
+      'details',
+      { class: 'sub-details', open: fixOpen || changed, onToggle: (e) => (fixOpen = e.target.open) },
+      h('summary', null, '누른 시각 고치기'),
+      h('div', { class: 'hint' }, '늦게·일찍 눌렀거나 못 누른 단계를 실제 시각으로 고칩니다. 타이머 기록은 그대로 두고, 화면·비교·AI 공유는 고친 시각으로 봅니다.'),
+      field(
+        term('시작 보정', '[시작]을 늦게 눌렀으면 +, 일찍 눌렀으면 −'),
+        stepper({ value: shift, step: 1, min: -30, max: 30, unit: '초', onChange: (v) => { save('startShiftSec', v ?? 0); draw(); } }),
+        '모든 누른 시각이 이만큼 옮겨집니다(붓기 시작 = 0초).',
+      ),
+      ...t.steps.map((st, i) =>
+        field(
+          `${st.label} 끝`,
+          stepper({ value: st.actualEndSec, step: 1, min: 0, max: 3600, unit: '초', onChange: (v) => setFix(i, v) }),
+          `${formatSec(st.actualEndSec)} · 레시피 ${formatSec(st.plannedEndSec)}${st.corrected ? ` · 누른 시각 ${formatSec(b.timer.steps[i].actualEndSec)}에서 고침` : ''}`,
+        ),
+      ),
+      changed ? h('button', { type: 'button', class: 'inline-btn quiet', onClick: () => { save('stepFix', {}); save('startShiftSec', 0); draw(); } }, '누른 시각으로 되돌리기') : null,
+    );
   }
 
   function draw() {
@@ -936,7 +1091,7 @@ export function resultScreen(id) {
       root,
       h('h1', null, '추출 결과'),
       h('div', { class: 'hint' }, '자동으로 저장되었습니다. 아래를 고치면 바로 반영됩니다.'),
-      section('결과', timerTable(b), brewFigure(b), h('div', { class: 'total' }, `총 ${formatSec(b.timer.totalSec)}`, h('span', { class: 'muted' }, ` (레시피 ${formatSec(b.timer.plannedTotalSec)})`)), ...lines),
+      section('결과', timerTable(b), brewFigure(b), h('div', { class: 'total' }, `총 ${formatSec(timerOf(b).totalSec)}`, h('span', { class: 'muted' }, ` (레시피 ${formatSec(b.timer.plannedTotalSec)})`)), ...lines, fixEditor()),
       section(
         '종료 상태',
         chips({
@@ -956,9 +1111,14 @@ export function resultScreen(id) {
       section(
         '추출 후',
         ...serverBlock(),
-        dilutionBlock(),
+        ...dilutionBlock(),
+        ...iceBlock(),
+        ratioBlock(),
       ),
-      h('button', { class: 'primary big wide', onClick: () => (location.hash = `#/brew/${b.id}/survey`) }, '맛 설문하기'),
+      measureSection(),
+      // 추가 입력(사용자 요청 9/26 — 테이스팅 노트처럼 결과에도 자유롭게 적는 칸)
+      section(null, field(termOf(WORDS.resultNote), h('textarea', { rows: 3, value: b.result.extraNote ?? '', placeholder: '물이 한쪽으로 쏠림, 원두층이 평평하지 않음 등', onChange: (e) => save('extraNote', e.target.value.trim() || null) }))),
+      h('button', { class: 'primary big wide', onClick: () => (location.hash = `#/brew/${b.id}/survey`) }, '테이스팅 노트 쓰기'),
       h('button', { class: 'wide', onClick: () => (location.hash = '#/') }, '마신 뒤에 할게요'),
     );
   }

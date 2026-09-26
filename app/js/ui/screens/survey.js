@@ -4,11 +4,12 @@
 // - 항목 이름을 누르면 메모 칸이 열린다(슬라이더는 그대로 두고 보조로 적는다)
 // - 종류는 칩으로 고른다(산미: 상큼한/시큼한 등)
 
-import { h, section, chips, tagEditor, termOf, paintScale } from '../dom.js';
+import { h, section, chips, tagEditor, termOf, levelSlider } from '../dom.js';
 import { WORDS } from '../../core/words.js';
 import { store } from '../../core/store.js';
 import { SURVEY_ITEMS, INTENSITY_WORDS, LIKING_WORDS, OFF_FLAVORS, NOTE_PERCEPTION, FLAVOR_CHIPS, emptySurvey } from '../../core/schema.js';
 import { logEvent } from '../../core/log.js';
+import { lastNotePerceptions } from '../../core/suggest.js';
 import { timerTable, conditionsList } from './brew.js';
 import { brewNotFound } from './records.js';
 import { fmtDateTime } from '../dom.js';
@@ -31,42 +32,10 @@ function noteToggle(label, note, onNote) {
   return { title, box };
 }
 
+// 슬라이더 한 줄: 공용 levelSlider(원두 배전도와 같은 것) + 항목 이름을 누르면 여는 메모 칸
 function scaleRow({ label, words, value, onChange, note, onNote }) {
-  let level = value;
-  const range = h('input', { type: 'range', min: 1, max: words.length, step: 1, value: level ?? Math.ceil(words.length / 2), class: 'scale' });
-  const word = h('div', { class: 'scale-word' });
-  const off = h('button', { type: 'button', class: 'chip' }, '선택 안 함');
-  const paint = () => {
-    paintScale(range);
-    range.classList.toggle('off', level == null);
-    off.classList.toggle('on', level == null);
-    word.textContent = level == null ? '선택 안 함' : words[level - 1];
-  };
-  const take = () => {
-    level = Number(range.value);
-    paint();
-    onChange(level);
-  };
-  // 「선택 안 함」 상태에서 가운데를 그냥 눌러도 값이 들어가도록 click 도 받는다
-  range.addEventListener('input', take);
-  range.addEventListener('click', take);
-  off.addEventListener('click', () => {
-    level = null;
-    paint();
-    onChange(null);
-  });
   const { title, box } = onNote ? noteToggle(label, note, onNote) : { title: h('div', { class: 'item-title' }, label), box: null };
-  paint();
-  return h(
-    'div',
-    // --n = 단계 수: 눈금 단어를 슬라이더의 각 칸 위치에 맞춘다(CSS .scale-row, 원두 배전도 슬라이더와 같은 규칙)
-    { class: 'scale-row', style: `--n:${words.length}` },
-    h('div', { class: 'row between' }, title, off),
-    range,
-    h('div', { class: 'ticks' }, ...words.map((w) => h('span', null, w))),
-    word,
-    box,
-  );
+  return h('div', null, levelSlider({ label: title, words, value, onChange }), box);
 }
 
 export function surveyScreen(id) {
@@ -74,6 +43,10 @@ export function surveyScreen(id) {
   if (!b) return brewNotFound();
   const s = structuredClone(b.survey ?? emptySurvey());
   const bean = b.bean?.id ? store.get('beans', b.bean.id) : null;
+  // 원두 노트 인식 미리 채우기(사용자 요청 9/25): 처음 쓰는 테이스팅 노트면, 같은 원두의 이전 기록에서 노트마다 «가장 최근에 답한 값»을 채운다.
+  // 노트별로 따로 찾는다(한 기록을 통째로 옮기지 않음). 저장하면 이 기록에만 들어가고, 이전 기록은 바뀌지 않는다.
+  const prefilled = b.survey ? {} : lastNotePerceptions(store.brews(), b, bean?.notes ?? []);
+  for (const [n, p] of Object.entries(prefilled)) s.notePerception[n] = p.value;
   const detail = h('div', { class: 'hidden' }, timerTable(b), conditionsList(b));
 
   const itemRows = SURVEY_ITEMS.map((it) => {
@@ -96,7 +69,11 @@ export function surveyScreen(id) {
     b.survey = s;
     store.put('brews', b);
     const levels = [...Object.values(s.items).map((i) => i.level), s.liking];
-    logEvent('survey.save', { answered: levels.filter((v) => v != null).length, skipped: levels.filter((v) => v == null).length, share }, { brewId: b.id });
+    const pre = Object.keys(prefilled);
+    logEvent('survey.save', {
+      answered: levels.filter((v) => v != null).length, skipped: levels.filter((v) => v == null).length, share,
+      notesPrefilled: pre.length, notesPrefillKept: pre.filter((n) => s.notePerception[n] === prefilled[n].value).length,
+    }, { brewId: b.id });
     location.hash = share ? `#/brew/${b.id}/share` : `#/brew/${b.id}`;
   }
 
@@ -111,7 +88,7 @@ export function surveyScreen(id) {
   return h(
     'div',
     { class: 'screen' },
-    h('h1', null, '맛 설문'),
+    h('h1', null, '테이스팅 노트'),
     h(
       'div',
       { class: 'row between' },
@@ -129,10 +106,16 @@ export function surveyScreen(id) {
     section(
       null,
       h('h2', null, termOf(WORDS.notePerception)),
+      Object.keys(prefilled).length ? h('div', { class: 'hint' }, '같은 원두의 지난 테이스팅 노트에서 노트마다 가장 최근 값을 골라 두었습니다. 바꾸거나 그대로 저장하면 이 기록에만 저장됩니다.') : null,
       beanNotes.length
-        ? beanNotes.map((n) =>
-            h('div', { class: 'note-row' }, h('span', null, n), chips({ options: NOTE_PERCEPTION, selected: s.notePerception[n] ?? null, onChange: (v) => (v ? (s.notePerception[n] = v) : delete s.notePerception[n]) })),
-          )
+        ? beanNotes.map((n) => {
+            const from = prefilled[n] ? h('span', { class: 'term-sub' }, `${fmtDateTime(prefilled[n].at)} 기록에서`) : null;
+            return h('div', { class: 'note-row' }, h('span', null, n, from), chips({ options: NOTE_PERCEPTION, selected: s.notePerception[n] ?? null, onChange: (v) => {
+              if (v) s.notePerception[n] = v;
+              else delete s.notePerception[n];
+              from?.remove(); // 손으로 고르면 «가져옴» 표시를 뗀다
+            } }));
+          })
         : h('div', { class: 'hint' }, '원두에 적힌 노트를 원두 등록에서 넣으면, 여기서 느껴졌는지 물어봅니다.'),
       h('div', { class: 'field-label' }, termOf(WORDS.myNotes)),
       tagEditor({ options: FLAVOR_CHIPS, selected: s.myNotes, onChange: (v) => (s.myNotes = v) }),

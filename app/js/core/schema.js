@@ -9,7 +9,7 @@ export function newId(prefix, now = Date.now()) {
 }
 
 // ── 분쇄 표기 ──────────────────────────────────────────────
-// 다이얼 110, 영점 -3 → 화면 "110(-3)", 실제 위치 107.
+// 그라인더 표시값 110, 영점 -3 → 화면 "110(-3)", 영점 반영값 107(용어 9/26 사용자 결정).
 // 영점은 그라인더마다 저장하고, 기록에는 그때의 영점을 복사해 둔다(나중에 영점을 바꿔도 옛 기록은 그대로).
 export function grindActual(dial, zeroOffset = 0) {
   if (dial == null) return null;
@@ -37,6 +37,27 @@ export function formatDelta(sec) {
 
 export function round1(x) {
   return Math.round(x * 10) / 10;
+}
+
+// ── 고친 시각을 겹쳐 본 타이머(사용자 요청 9/25·9/26 — 누른 시각은 모두 나중에 고칠 수 있다) ──
+// 앱은 늦게·일찍 누른 것을 알아챌 수 없어서, 못 누른 경우만이 아니라 모든 단계를 사후에 고친다(사용자 정정 9/26).
+// 타이머 기록(timer)은 저장한 뒤 바꾸지 않는다. 결과의 두 값을 겹쳐 본다:
+//   startShiftSec = [시작]을 늦게(+)·일찍(−) 누른 만큼 — 모든 누른 시각을 그만큼 옮긴다(붓기 시작이 0초)
+//   stepFix = { 단계 번호: 고친 «그 단계가 끝난» 초 } — 옮긴 뒤 값 위에 단계별로 덮어쓴다
+// 화면·비교·그래프·AI 공유는 모두 이것을 읽는다. 바뀐 단계는 corrected = true.
+export function timerOf(b) {
+  const fix = b?.result?.stepFix ?? {};
+  const shift = b?.result?.startShiftSec ?? 0;
+  if (!shift && !Object.keys(fix).length) return b.timer;
+  const moved = (t) => (t == null ? t : round1(t + shift));
+  const ends = b.timer.steps.map((s, i) => fix[i] ?? moved(s.actualEndSec));
+  const steps = b.timer.steps.map((s, i) => ({
+    ...s,
+    actualStartSec: i === 0 ? s.actualStartSec : ends[i - 1],
+    actualEndSec: ends[i],
+    corrected: fix[i] != null || (shift !== 0 && s.actualEndSec != null),
+  }));
+  return { ...b.timer, steps, totalSec: ends[ends.length - 1] };
 }
 
 // ── 누른 시각 판정 ─────────────────────────────────────────
@@ -104,6 +125,29 @@ export const PROCESS_TYPES = ['워시드', '내추럴']; // SCA 외재적 평가
 // 다음 추출 제안은 강배전일 때만 쓴맛을 한 단계 낮춰 본다(core/compass.js).
 export const ROASTS = ['약배전', '중약배전', '중배전', '중강배전', '강배전'];
 export const ROAST_TICKS = ['약', '중약', '중', '중강', '강'];
+// 9/26 사용자 요청: 배전도를 0.5 단위 0.5~10 숫자로 고른다(roastLevel). 단어(roast)는 숫자에서 정한다 — 5단계 띠:
+//   0.5~2 약배전 · 2.5~4 중약배전 · 4.5~6 중배전 · 6.5~8 중강배전 · 8.5~10 강배전(다음 추출 제안이 보는 값은 그대로 단어다).
+// 숫자 없이 단어만 있는 9/26 전 원두는 단어를 그대로 두고 보인다(숫자를 지어 채우지 않는다).
+export const ROAST_LEVEL = { min: 0.5, max: 10, step: 0.5 };
+export const ROAST_LEVEL_TICKS = ROASTS.map((w, i) => [i * 2 + 1.25, ROAST_TICKS[i]]); // 띠 가운데에 단어
+export function roastWordOf(level) {
+  if (level == null) return '';
+  return ROASTS[Math.min(4, Math.max(0, Math.ceil(level / 2) - 1))];
+}
+// 목록·공유에 보일 배전도: 「중배전 5.5/10」 · 옛 원두는 「중배전」
+export function roastLabel(bean) {
+  if (bean?.roastLevel != null) return `${roastWordOf(bean.roastLevel)} ${bean.roastLevel}/10`;
+  return bean?.roast || '';
+}
+
+// 로스터리 맛 지표(9/26 사용자 요청): 봉투·상세 페이지의 「산미 3.5 · 단맛 4」 같은 표기. 로스터리마다 5점·10점으로 달라
+// 척도를 함께 적는다(roasterProfile = { scale: 5|10, items: [{ label, value(0~scale, 0.5 단위) }] }). 별·점 표기는 개수를 적는다.
+export const PROFILE_SCALES = [5, 10];
+export const PROFILE_ITEMS = ['산미', '단맛', '바디', '쓴맛', '고소함', '밸런스'];
+export function profileLine(p) {
+  if (!p?.items?.length) return '';
+  return p.items.map((it) => `${it.label} ${it.value}/${p.scale}`).join(' · ');
+}
 // 종료 상태는 key 로 저장한다. 화면 단어는 core/words.js END_STATE_WORDS.
 export const END_STATES = ['drained', 'cutoff'];
 // AI 공유 파일 형식. 기본값은 설정에서 고른다(처음 값 = md: AI에게 묻는 용도가 기본이라서).
@@ -166,7 +210,10 @@ export function createBean(fields = {}, now = Date.now()) {
     producer: '', // 농장·생산자
     variety: '', // 품종
     process: '', // 가공방식
-    roast: '', // 배전도(ROASTS 중 하나, 선택)
+    roast: '', // 배전도 단어(ROASTS 중 하나, 선택) — roastLevel 이 있으면 거기서 정한다
+    roastLevel: null, // 배전도 숫자 0.5~10(0.5 단위, 9/26)
+    decaf: false, // 디카페인(9/26) — 추출 준비에서 분쇄·원두량 보조 안내
+    roasterProfile: null, // 로스터리 맛 지표(9/26) { scale, items: [{ label, value }] }
     notes: [], // 로스터리가 표기한 노트
     memo: '',
     purchased: null, // 구매 무게 { amount, unit(BEAN_UNITS 키) } — 남은 원두 추정의 출발점
@@ -263,20 +310,51 @@ export function dilutionView(b) {
   const hot = r.actualWaterG ?? c.hotWaterG;
   const ice = iced ? c.iceG ?? 0 : 0;
   const iceTarget = iced ? c.iceTargetG ?? c.iceG ?? 0 : 0;
-  const measured = measuredDilution(r);
-  const dilutionG = measured ?? r.dilutionG ?? 0;
+  // 가수는 result.dilutionG 가 원본이다(9/26 — 무게 칸끼리 서로 따라 바뀌게 하면서). 9/26 전 기록은 두 무게가 있으면 그 차이.
+  const legacy = r.lastWeighed == null ? measuredDilution(r) : null;
+  const dilutionG = legacy ?? r.dilutionG ?? 0;
+  // 추출 뒤 더 넣은 얼음(아이스, 켰을 때만) — 녹으면 물이 되므로 비율에 넣는다
+  const iceAddedG = iced && r.iceAddedOn ? r.iceAddedG ?? 0 : 0;
   const targetWaterG = c.hotWaterG + iceTarget + (b.recipe?.snapshot?.dilutionG ?? 0);
   const needG = round1(targetWaterG - hot - ice);
+  const now = hot + ice + dilutionG + iceAddedG;
   return {
     dilutionG,
-    measured: measured != null,
-    waterNowG: round1(hot + ice + dilutionG),
-    ratioNow: (hot + ice + dilutionG) / c.doseG,
+    iceAddedG,
+    measured: legacy != null || (r.lastWeighed === 'after' && r.serverWeightG != null && r.serverAfterG != null),
+    waterNowG: round1(now),
+    ratioNow: now / c.doseG,
     targetWaterG,
     ratioTarget: targetWaterG / c.doseG,
     needG,
-    moreG: round1(needG - dilutionG),
+    moreG: round1(needG - dilutionG - iceAddedG),
   };
+}
+
+// 추출 뒤 무게 칸 연동(사용자 요청 9/26): 가수 전 총무게 + 가수 = 가수 후 총무게, 가수 후 총무게 + 추가 얼음 = 얼음 넣은 뒤 총무게.
+// 어느 칸을 고쳐도 나머지가 따라 바뀌고 칸은 사라지지 않는다. 마지막에 손댄 쪽(lastWeighed · iceLastWeighed)이 원본이다:
+//   가수를 고치면 가수 후 총무게를 계산, 가수 후 총무게를 고치면 가수를 계산. 가수 전 총무게를 나중에 넣으면 원본 쪽을 지킨다.
+// 돌려주는 것은 바꿀 칸들 { 칸: 값 } — 부르는 쪽이 저장한다.
+export function linkWeights(result, key, value, { iceOn = false } = {}) {
+  const r = { ...result, [key]: value };
+  if (key === 'dilutionG') r.lastWeighed = 'dilution';
+  if (key === 'serverAfterG' && value != null) r.lastWeighed = 'after';
+  if (key === 'iceAddedG') r.iceLastWeighed = 'ice';
+  if (key === 'serverAfterIceG' && value != null) r.iceLastWeighed = 'after';
+  const A = r.serverWeightG;
+  if (A != null) {
+    if (r.lastWeighed === 'after' && r.serverAfterG != null) r.dilutionG = Math.max(0, round1(r.serverAfterG - A));
+    else r.serverAfterG = round1(A + (r.dilutionG ?? 0));
+  }
+  if (iceOn && r.serverAfterG != null) {
+    if (r.iceLastWeighed === 'after' && r.serverAfterIceG != null) r.iceAddedG = Math.max(0, round1(r.serverAfterIceG - r.serverAfterG));
+    else r.serverAfterIceG = round1(r.serverAfterG + (r.iceAddedG ?? 0));
+  }
+  const changed = {};
+  for (const k of ['serverWeightG', 'dilutionG', 'serverAfterG', 'iceAddedG', 'serverAfterIceG', 'lastWeighed', 'iceLastWeighed']) {
+    if (r[k] !== result[k]) changed[k] = r[k];
+  }
+  return changed;
 }
 
 // 서버(추출 받는 그릇): 이름과 자체 무게(g). 결과 화면에서 총 무게에서 빼는 데 쓴다.

@@ -72,18 +72,23 @@ export function readCompass(survey, { roast = null } = {}) {
   };
 }
 
-// 제안: grindUm 양수 = 굵게, 음수 = 가늘게. clicks 는 그라인더의 클릭당 µm 를 알 때만(양수 = 다이얼 숫자를 올림).
+// 제안: grindUm 양수 = 굵게, 음수 = 가늘게. clicks 는 그라인더의 클릭당 µm 를 알 때만(양수 = 그라인더 표시값을 올림).
 // doseDeltaG 는 물을 그대로 둔 채 원두를 얼마나 바꾸는지.
 export function adviseNext(compass, { umPerClick = null } = {}) {
   if (!compass || !compass.answered) return null;
   const grindUm = compass.extraction * COMPASS_STEP.grindUm;
   const doseDeltaG = -compass.strength * COMPASS_STEP.doseG;
-  const clicks = grindUm && umPerClick ? Math.round(grindUm / umPerClick) : null;
+  // 클릭 수: 반올림해 0 이 되어도 움직여야 하면 1클릭(방향은 µm 와 클릭당 µm 의 부호로 — 클릭당 µm 가 음수인 그라인더도 있다)
+  const clicks = grindUm && umPerClick ? Math.sign(grindUm / umPerClick) * Math.max(1, Math.round(Math.abs(grindUm / umPerClick))) : null;
   const lines = [];
   if (grindUm) {
+    // 9/26 사용자 요청: µm 로 말하기보다 «몇 클릭 어느 방향»을 먼저. 클릭당 µm 를 모르면 방향과 µm 만.
     const dir = grindUm < 0 ? '가늘게' : '굵게';
-    const click = clicks ? ` · 약 ${Math.abs(clicks)}클릭 ${dir}` : '';
-    lines.push(`분쇄를 약 ${Math.abs(grindUm)}µm ${dir}${click}`);
+    lines.push(
+      clicks
+        ? `분쇄 ${Math.abs(clicks)}클릭 ${dir} (그라인더 표시값 ${clicks > 0 ? '+' : '−'}${Math.abs(clicks)} · 약 ${Math.abs(grindUm)}µm)`
+        : `분쇄 조금 ${dir} (약 ${Math.abs(grindUm)}µm — 클릭당 µm 를 알면 클릭 수로 보여 드립니다)`,
+    );
   }
   if (doseDeltaG) lines.push(`원두를 ${Math.abs(doseDeltaG)}g ${doseDeltaG > 0 ? '늘리기' : '줄이기'} (물은 그대로)`);
   if (compass.mixed) lines.push('시큼함과 쓴맛·마름이 함께 있어 방향이 엇갈립니다. 분쇄는 그대로 두고 한 번 더 내려 보세요.');
@@ -103,8 +108,8 @@ export function adviseNext(compass, { umPerClick = null } = {}) {
   return { grindUm, clicks, doseDeltaG, keep, lines };
 }
 
-// 클릭당 µm: 설정에 적은 값이 먼저, 없으면 이 그라인더 기록들의 (실제 클릭, 참고 µm)로 기울기를 구한다.
-// 실제 클릭 = 다이얼 + 그때의 영점 — 영점을 바꿔도 같은 위치끼리 비교되게. 서로 다른 클릭이 둘 이상이어야 한다.
+// 클릭당 µm: 설정에 적은 값이 먼저, 없으면 이 그라인더 기록들의 (영점 반영값, 참고 µm)로 기울기를 구한다.
+// 영점 반영값 = 그라인더 표시값 + 그때의 영점 — 영점을 바꿔도 같은 위치끼리 비교되게. 서로 다른 클릭이 둘 이상이어야 한다.
 export function estimateUmPerClick(brews, grinderId) {
   const pts = brews
     .map((b) => b.conditions?.grind)

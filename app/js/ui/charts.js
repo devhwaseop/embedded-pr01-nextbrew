@@ -6,7 +6,7 @@
 // 색은 흰 바탕에서 3:1 이상(WCAG 1.4.11)이고, 색만으로 구분하지 않게 선 모양(점선·실선·점)도 다르게 한다.
 
 import { h, svg } from './dom.js';
-import { formatSec } from '../core/schema.js';
+import { formatSec, timerOf } from '../core/schema.js';
 import { planPoints, brewPlanPoints, brewActualPoints, planBars, ticks } from '../core/chart.js';
 
 const W = 330;
@@ -85,14 +85,14 @@ export function planFigure(plan) {
 export function brewFigure(b) {
   const plan = brewPlanPoints(b);
   const act = brewActualPoints(b);
-  const xMax = niceMax(Math.max(b.timer.plannedTotalSec, b.timer.totalSec ?? 0), 30);
+  const xMax = niceMax(Math.max(b.timer.plannedTotalSec, timerOf(b).totalSec ?? 0), 30);
   const topG = Math.max(...plan.map((p) => p[1]));
   const yMax = niceMax(topG, topG > 300 ? 100 : 50);
   const s = scales(xMax, yMax);
   const height = T + PLOT_H + AXIS_H;
   const el = svg('svg', { viewBox: `0 0 ${W} ${height}`, class: 'c-svg' }, ...grid(xMax, yMax, s, height), line(plan, s, 'c-plan'), line(act, s, 'c-actual'), ...dots(act, s, 'c-dot'));
   return figure(
-    `누적 물량: 계획 ${formatSec(b.timer.plannedTotalSec)}, 실제 ${formatSec(b.timer.totalSec)}`,
+    `누적 물량: 계획 ${formatSec(b.timer.plannedTotalSec)}, 실제 ${formatSec(timerOf(b).totalSec)}`,
     el,
     legend([['lg-plan', '레시피 계획'], ['lg-actual', '실제로 누른 시각']]),
     h('figcaption', { class: 'source' }, '실선은 계획한 붓기를 실제로 누른 시각에 맞춰 옮긴 선입니다. 저울 값을 잰 것은 아닙니다.'),
@@ -103,14 +103,14 @@ export function brewFigure(b) {
 export function compareFigure(b, partner, partnerLabel) {
   const a = brewActualPoints(b);
   const p = brewActualPoints(partner);
-  const xMax = niceMax(Math.max(b.timer.totalSec ?? 0, partner.timer.totalSec ?? 0, b.timer.plannedTotalSec), 30);
+  const xMax = niceMax(Math.max(timerOf(b).totalSec ?? 0, timerOf(partner).totalSec ?? 0, b.timer.plannedTotalSec), 30);
   const topG = Math.max(...a.map((x) => x[1]), ...p.map((x) => x[1]));
   const yMax = niceMax(topG, topG > 300 ? 100 : 50);
   const s = scales(xMax, yMax);
   const height = T + PLOT_H + AXIS_H;
   const el = svg('svg', { viewBox: `0 0 ${W} ${height}`, class: 'c-svg' }, ...grid(xMax, yMax, s, height), line(p, s, 'c-partner'), ...dots(p, s, 'c-dot-partner'), line(a, s, 'c-actual'), ...dots(a, s, 'c-dot'));
   return figure(
-    `두 기록의 누른 시각: 이번 ${formatSec(b.timer.totalSec)}, ${partnerLabel} ${formatSec(partner.timer.totalSec)}`,
+    `두 기록의 누른 시각: 이번 ${formatSec(timerOf(b).totalSec)}, ${partnerLabel} ${formatSec(timerOf(partner).totalSec)}`,
     el,
     legend([['lg-actual', '이번'], ['lg-partner', partnerLabel]]),
   );
@@ -143,4 +143,71 @@ export function compassFigure(c) {
   );
   const where = [c.extraction < 0 ? '과소추출 쪽' : c.extraction > 0 ? '과다추출 쪽' : null, c.strength > 0 ? '진한 쪽' : c.strength < 0 ? '연한 쪽' : null].filter(Boolean).join(' · ') || '균형';
   return figure(`이번 맛의 위치: ${where}`, el, h('div', { class: 'hint center' }, `이번 맛: ${where}`));
+}
+
+// ── 분쇄 측정(사용자 요청 9/26 — 언스페셜티 CSV 의 원 데이터로 직접 그린다) ─────────────
+// 원본 사진과 달리: 값이 있는 범위만 로그 가로축으로 넓게, 누적 부피(오른쪽 축)·평균 ± 정확도 띠·D50 을 함께, 숫자 요약을 붙인다.
+const MW = 330;
+const ML = 34;
+const MR = 34;
+const MT = 12;
+const MH = 150;
+const niceUm = [20, 50, 100, 200, 300, 500, 700, 1000, 1500, 2000, 3000];
+export function measureFigure(m) {
+  const bins = m.bins.map(([um, vol, count]) => ({ um, vol, count }));
+  const has = bins.filter((b) => b.vol > 0 || b.count > 0);
+  if (!has.length) return null;
+  const lo = has[0].um / 1.25;
+  const hi = has[has.length - 1].um * 1.25;
+  const sx = (um) => ML + ((Math.log(um) - Math.log(lo)) / (Math.log(hi) - Math.log(lo))) * (MW - ML - MR);
+  const yMax = Math.max(5, Math.ceil(Math.max(...bins.map((b) => Math.max(b.vol, b.count))) / 5) * 5);
+  const sy = (v) => MT + (1 - v / yMax) * MH;
+  const sc = (p) => MT + (1 - p / 100) * MH; // 누적(오른쪽 축)
+  const bottom = MT + MH;
+  const H = bottom + 26;
+  const ratio = bins.length > 1 ? bins[1].um / bins[0].um : 1.1;
+  const out = [];
+  // 가로 눈금(µm)·세로 눈금(%)
+  for (const v of niceUm.filter((u) => u >= lo && u <= hi)) {
+    out.push(svg('line', { x1: sx(v), x2: sx(v), y1: MT, y2: bottom, class: 'c-grid' }));
+    out.push(svg('text', { x: sx(v), y: H - 8, class: 'c-tick', 'text-anchor': 'middle' }, v >= 1000 ? `${v / 1000}k` : String(v)));
+  }
+  for (let v = 0; v <= yMax; v += yMax > 20 ? 10 : 5) {
+    out.push(svg('line', { x1: ML, x2: MW - MR, y1: sy(v), y2: sy(v), class: 'c-grid' }));
+    out.push(svg('text', { x: ML - 5, y: sy(v) + 3.5, class: 'c-tick', 'text-anchor': 'end' }, `${v}%`));
+  }
+  for (const p of [0, 50, 100]) out.push(svg('text', { x: MW - MR + 5, y: sc(p) + 3.5, class: 'c-tick' }, `${p}%`));
+  // 평균 ± 정확도 띠, 평균선, D50
+  if (m.meanUm) {
+    const a = m.accuracyUm ?? 0;
+    if (a) out.push(svg('rect', { x: sx(Math.max(lo, m.meanUm - a)), y: MT, width: Math.max(1, sx(Math.min(hi, m.meanUm + a)) - sx(Math.max(lo, m.meanUm - a))), height: MH, class: 'c-band' }));
+    out.push(svg('line', { x1: sx(m.meanUm), x2: sx(m.meanUm), y1: MT, y2: bottom, class: 'c-mean' }));
+  }
+  if (m.d50) out.push(svg('line', { x1: sx(m.d50), x2: sx(m.d50), y1: MT, y2: bottom, class: 'c-d50' }));
+  // 부피 비율 막대(칸 폭은 로그 간격의 70%)
+  for (const b of bins.filter((x) => x.vol > 0)) {
+    const x0 = sx(b.um);
+    const x1 = sx(b.um * ratio);
+    out.push(svg('rect', { x: x0 + (x1 - x0) * 0.15, y: sy(b.vol), width: Math.max(1, (x1 - x0) * 0.7), height: bottom - sy(b.vol), class: 'c-bar-vol' }));
+  }
+  // 개수 비율(점선 + 점)·누적 부피(실선)
+  const inRange = bins.filter((b) => b.um >= lo && b.um <= hi);
+  const mid = (b) => sx(b.um * Math.sqrt(ratio));
+  out.push(svg('polyline', { points: inRange.map((b) => `${mid(b).toFixed(1)},${sy(b.count).toFixed(1)}`).join(' '), class: 'c-count' }));
+  for (const b of inRange.filter((x) => x.count > 0)) out.push(svg('circle', { cx: mid(b), cy: sy(b.count), r: 2.2, class: 'c-dot-count' }));
+  let cum = 0;
+  const cumPts = inRange.map((b) => {
+    cum += b.vol;
+    return `${sx(b.um * ratio).toFixed(1)},${sc(Math.min(100, cum)).toFixed(1)}`;
+  });
+  out.push(svg('polyline', { points: [`${sx(lo).toFixed(1)},${sc(0)}`, ...cumPts].join(' '), class: 'c-cum' }));
+  const el = svg('svg', { viewBox: `0 0 ${MW} ${H}`, class: 'c-svg' }, ...out);
+  const fmt = (v) => (v == null ? '—' : `${Math.round(v)}µm`);
+  const label = `분쇄 입자 크기 분포: 평균 ${m.meanUm}µm, D10 ${fmt(m.d10)}, D50 ${fmt(m.d50)}, D90 ${fmt(m.d90)}`;
+  return figure(
+    label,
+    el,
+    legend([['lg-vol', '부피 비율'], ['lg-count', '개수 비율'], ['lg-cum', '누적 부피(오른쪽)'], ['lg-mean', `평균${m.accuracyUm ? ' ± 정확도' : ''}`], ['lg-d50', 'D50']]),
+    h('div', { class: 'hint' }, `가로축 µm(로그) · 입자 ${m.particles ?? '?'}개 · D10 ${fmt(m.d10)} · D50 ${fmt(m.d50)} · D90 ${fmt(m.d90)} · 가장 많은 부피 ${fmt(m.modeUm)}`),
+  );
 }

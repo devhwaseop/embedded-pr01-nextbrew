@@ -8,12 +8,12 @@
 // (9/25 사용자 보고 → 크롬 원본 share_service_impl.cc·ShareServiceImpl.java·navigator_share.cc 확인. 목록에 .md·.json 없음, .txt 있음).
 // 그래서 공유창으로 보낼 때만 같은 내용을 .txt(text/plain)로 싸서 보낸다. [파일 저장]은 고른 형식(.md·.json) 그대로다.
 
-import { h, fill, section, chips, toast } from '../dom.js';
+import { h, fill, section, chips, toast, fmtDateTime } from '../dom.js';
 import { icon } from '../icons.js';
-import { brewNotFound } from './records.js';
+import { brewNotFound, SELECTION_KEY } from './records.js';
 import { store } from '../../core/store.js';
 import { SHARE_FORMATS, SHARE_SCOPES } from '../../core/schema.js';
-import { buildSharePackage, shareFileName, shareSheetName, toJSON, toMarkdown, defaultSharePrompt, SHARE_ROLES } from '../../core/share.js';
+import { buildSharePackage, buildSelectionPackage, shareFileName, shareSheetName, toJSON, toMarkdown, defaultSharePrompt, SHARE_ROLES } from '../../core/share.js';
 import { logEvent } from '../../core/log.js';
 import { SHARE_FORMAT_WORDS, SHARE_SCOPE_WORDS } from '../../core/words.js';
 
@@ -25,9 +25,15 @@ const SCOPE_DESCRIBE = Object.fromEntries(SHARE_SCOPES.map((k) => [SCOPE_LABELS[
 const TYPES = { md: 'text/markdown', json: 'application/json' };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// id = 기록 ID, 또는 'selected'(기록 목록에서 길게 눌러 고른 여러 건 — 9/26, 고른 ID 는 sessionStorage)
 export function shareScreen(id) {
-  const b = store.get('brews', id);
+  const selIds = id === 'selected' ? JSON.parse(sessionStorage.getItem(SELECTION_KEY) ?? '[]').filter((x) => store.get('brews', x)) : null;
+  if (selIds && !selIds.length) return h('div', { class: 'screen' }, h('h1', null, 'AI로 공유'), h('div', { class: 'hint' }, '고른 기록이 없습니다.'), h('a', { class: 'button wide', href: '#/history' }, '기록 목록으로'));
+  // 고른 기록이면 가장 최근 것을 기준 기록으로(로그의 brewId · 파일 이름)
+  const b = selIds ? selIds.map((x) => store.get('brews', x)).sort((p, q) => q.timer.startedAt - p.timer.startedAt)[0] : store.get('brews', id);
   if (!b) return brewNotFound();
+  const kind = selIds ? 'selected' : 'one';
+  const promptKey = selIds ? 'sharePromptSelected' : 'sharePrompt'; // 고친 프롬프트는 종류마다 따로 남긴다
   const root = h('div', { class: 'screen' });
   let format = SHARE_FORMATS.includes(store.settings().shareFormat) ? store.settings().shareFormat : 'md';
   let scope = SHARE_SCOPES.includes(store.settings().shareScope) ? store.settings().shareScope : 'with';
@@ -35,9 +41,9 @@ export function shareScreen(id) {
   let buildNo = 0;
 
   // ── 프롬프트(한 번만 만들고 다시 그릴 때 그대로 옮겨 붙인다 — 고치던 글·커서가 날아가지 않게) ──
-  const saved = store.settings().sharePrompt;
-  let promptText = saved?.trim() ? saved : defaultSharePrompt();
-  const isCustom = () => promptText.trim() !== defaultSharePrompt().trim();
+  const saved = store.settings()[promptKey];
+  let promptText = saved?.trim() ? saved : defaultSharePrompt(kind);
+  const isCustom = () => promptText.trim() !== defaultSharePrompt(kind).trim();
   const copyIcon = h('button', { type: 'button', class: 'copy-icon', 'aria-label': '프롬프트 복사', title: '복사' }, icon('copy'));
   const promptArea = h('textarea', { class: 'prompt-text', rows: 9, value: promptText, 'aria-label': 'AI 에게 보낼 프롬프트' });
   const resetBtn = h('button', { type: 'button', class: 'inline-btn quiet' }, '기본으로 되돌리기');
@@ -47,7 +53,7 @@ export function shareScreen(id) {
     savedNote.textContent = isCustom() ? '고친 글은 저장되어 다음 공유에도 쓰입니다.' : '기본 질문: 다음 추출에서 무엇을 바꾸면 좋을지. 고쳐 써도 됩니다.';
   };
   const savePrompt = () => {
-    store.setSetting('sharePrompt', isCustom() ? promptText : null);
+    store.setSetting(promptKey, isCustom() ? promptText : null);
     logEvent('share.promptEdit', { custom: isCustom(), length: promptText.length }, { brewId: b.id });
     paintPrompt();
   };
@@ -57,7 +63,7 @@ export function shareScreen(id) {
   });
   promptArea.addEventListener('change', savePrompt); // 칸을 벗어날 때 한 번 저장(글자마다 저장·로그를 남기지 않게)
   resetBtn.addEventListener('click', () => {
-    promptText = defaultSharePrompt();
+    promptText = defaultSharePrompt(kind);
     promptArea.value = promptText;
     savePrompt();
     toast('기본 프롬프트로 되돌렸습니다.');
@@ -104,7 +110,9 @@ export function shareScreen(id) {
     ready = null;
     draw();
     const started = Date.now();
-    const pkg = buildSharePackage({ brews: store.list('brews'), beans: store.list('beans'), current: b, scope });
+    const pkg = selIds
+      ? buildSelectionPackage({ brews: store.list('brews'), beans: store.list('beans'), ids: selIds })
+      : buildSharePackage({ brews: store.list('brews'), beans: store.list('beans'), current: b, scope });
     const text = format === 'json' ? toJSON(pkg) : toMarkdown(pkg);
     const name = shareFileName(pkg, format);
     const file = new File([text], name, { type: TYPES[format] });
@@ -113,7 +121,7 @@ export function shareScreen(id) {
     await sleep(Math.max(0, BUFFER_MS - (Date.now() - started)));
     if (no !== buildNo) return; // 그사이 형식을 또 바꿨으면 이 결과는 버린다
     ready = { format, pkg, text, name, file, sheetFile, method };
-    logEvent('share.build', { format, scope, brews: pkg.brews.length, previous: Boolean(pkg.relations.previous), sameRecipeAndBean: Boolean(pkg.relations.sameRecipeAndBean) }, { brewId: b.id });
+    logEvent('share.build', { format, scope: pkg.scope, brews: pkg.brews.length, previous: Boolean(pkg.relations.previous), sameRecipeAndBean: Boolean(pkg.relations.sameRecipeAndBean) }, { brewId: b.id });
     draw();
   }
 
@@ -142,6 +150,9 @@ export function shareScreen(id) {
 
   function included() {
     const rel = ready.pkg.relations;
+    if (ready.pkg.scope === 'selected') {
+      return h('ul', { class: 'hint' }, ...ready.pkg.brews.map((x, i) => h('li', null, `${i + 1}. `, h('a', { href: `#/brew/${x.id}` }, `${fmtDateTime(x.timer.startedAt)} · ${x.recipe.name}`), x.id === rel.current ? ' (가장 최근)' : '')));
+    }
     if (ready.pkg.scope === 'single') return h('ul', { class: 'hint' }, h('li', null, `${SHARE_ROLES.current}: `, h('a', { href: `#/brew/${rel.current}` }, '이 기록')));
     const row = (role, id, extra) => h('li', null, `${SHARE_ROLES[role]}: `, id ? h('a', { href: `#/brew/${id}` }, extra ?? '보기') : '없음');
     return h(
@@ -177,7 +188,7 @@ export function shareScreen(id) {
           },
         }),
       ),
-      section(
+      selIds ? null : section(
         '담을 기록',
         chips({
           options: SHARE_SCOPES.map((k) => SCOPE_LABELS[k]),
@@ -208,7 +219,7 @@ export function shareScreen(id) {
             h('details', null, h('summary', null, '내용 미리 보기'), h('pre', { class: 'preview' }, ready.text)),
           )
         : section(null, h('div', { class: 'buffering', role: 'status' }, h('span', { class: 'spinner', 'aria-hidden': 'true' }), '묶는 중…')),
-      h('a', { class: 'button wide', href: `#/brew/${b.id}` }, '기록으로 돌아가기'),
+      selIds ? h('a', { class: 'button wide', href: '#/history' }, '기록 목록으로') : h('a', { class: 'button wide', href: `#/brew/${b.id}` }, '기록으로 돌아가기'),
     );
   }
 

@@ -16,7 +16,7 @@ export const CONFIDENCE_WORDS = { low: '낮음', medium: '보통', high: '높음
 // 다음 값의 허용 범위(레시피 가져오기와 같은 범위) · 이만큼 넘게 바뀌면 AI 가 잘못 옮겼을 수 있어 경고한다
 const RANGE = { grindDial: [0, 999], doseG: [1, 100], hotWaterG: [10, 3000], tempC: [50, 100] };
 const BIG_JUMP = { grindDial: 20, doseG: 3, tempC: 5 };
-const NEXT_WORDS = { grindDial: '분쇄 다이얼', doseG: '원두량', hotWaterG: '뜨거운 물', tempC: '물 온도' };
+const NEXT_WORDS = { grindDial: '그라인더 표시값', doseG: '원두량', hotWaterG: '뜨거운 물', tempC: '물 온도' };
 
 // 이 기록의 지금 값(비교·경고의 기준)
 export function currentValues(brew) {
@@ -39,7 +39,7 @@ export const ADVICE_EXAMPLE = {
   issues: ['산미가 시큼함(강함)'],
   next: { grindDial: 110, doseG: 16, hotWaterG: 150, tempC: 92 },
   changes: [
-    { item: 'grind', text: '시큼함이 강해(맛 설문 산미) 다이얼을 112 → 110 으로 조금 가늘게' },
+    { item: 'grind', text: '시큼함이 강해(테이스팅 노트 산미) 그라인더 표시값을 112 → 110 으로 조금 가늘게' },
     { item: 'temp', text: '같은 이유로 물 온도를 91 → 92℃ 로 1도 올림' },
   ],
   questions: [],
@@ -53,7 +53,7 @@ export function adviceFormatText() {
     '- JSON 하나만 코드 블록(```json … ```)에 넣어 주세요. 주석은 쓰지 말고, 숫자에는 단위를 붙이지 않습니다.',
     '- "brewId": 파일에 적힌 「이번 추출」의 기록 ID 를 그대로 적습니다.',
     '- "next": 다음 추출에 쓸 값입니다(바꿀 양이 아니라 바꾼 뒤의 값). 바꾸지 않는 값은 이번 값을 그대로, 모르면 null.',
-    '  - "grindDial": 그라인더에 보이는 다이얼 숫자(파일의 분쇄 크기에서 괄호 앞 숫자, 영점을 더하기 전).',
+    '  - "grindDial": 그라인더 표시값(그라인더에 보이는 숫자 — 파일의 분쇄 크기에서 괄호 앞 숫자, 영점을 더하기 전).',
     '  - "doseG": 원두량(g) · "hotWaterG": 뜨거운 물(g) · "tempC": 물 온도(℃).',
     `- "changes": 바꾸는 것마다 { "item": "${Object.keys(ADVICE_ITEMS).join('|')}", "text": "무엇을 왜 — 기록의 어떤 값이 근거인지" }.`,
     '- "summary": 이번 추출 평가 한두 문장 · "good"·"issues": 잘 된 점·아쉬운 점 목록.',
@@ -98,7 +98,7 @@ export function validateAdvice(raw, { brew = null, now = Date.now() } = {}) {
   for (const k of Object.keys(RANGE)) {
     let v = rawNext ? num(rawNext[k], `next.${k}`) : null;
     if (v != null && k === 'grindDial' && !Number.isInteger(v)) {
-      warn(`next.grindDial: ${v} 를 ${Math.round(v)} 로 반올림했습니다(다이얼은 정수).`);
+      warn(`next.grindDial: ${v} 를 ${Math.round(v)} 로 반올림했습니다(그라인더 표시값은 정수).`);
       v = Math.round(v);
     }
     next[k] = inRange(v, `next.${k}`, RANGE[k][0], RANGE[k][1], NEXT_WORDS[k]);

@@ -3,15 +3,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { formatGrind, grindActual, formatSec, formatDelta, createBrew, emptySurvey, timingVerdict, netServerWeight, SURVEY_ITEMS } from '../app/js/core/schema.js';
-import { measuredDilution, dilutionView, createBean, beanAutoName, beanNameIsAuto, purchasedGrams, beanStock, roastedFromBestBefore, daysSince, ROASTS } from '../app/js/core/schema.js';
+import { timerOf, linkWeights, measuredDilution, dilutionView, createBean, beanAutoName, beanNameIsAuto, purchasedGrams, beanStock, roastedFromBestBefore, daysSince, ROASTS } from '../app/js/core/schema.js';
 import { buildPlan, scaleAdvice, stepHint } from '../app/js/core/recipe.js';
-import { startBrew, readyBrew, elapsedSec, view, advance, undoAdvance, cancel, summarize, presence, acknowledge, checkAfterSec } from '../app/js/core/timer.js';
+import { startBrew, readyBrew, elapsedSec, view, advance, undoAdvance, cancel, summarize, presence, acknowledge, checkAfterSec, askGapSec } from '../app/js/core/timer.js';
 import { buildSharePackage, findShareRelations, toMarkdown, toJSON, shareFileName, shareSheetName, defaultSharePrompt, SHARE_ROLES } from '../app/js/core/share.js';
 import { stepRows, conditionRows } from '../app/js/core/facts.js';
 import { endStateLabel } from '../app/js/core/words.js';
 import { findPrevious, compareTimer, sideBySide } from '../app/js/core/diff.js';
 import { logEvent, setLogSink } from '../app/js/core/log.js';
-import { suggestNotes } from '../app/js/core/suggest.js';
+import { suggestNotes, lastNotePerceptions } from '../app/js/core/suggest.js';
 import { buildExport, parseImport, mergeById } from '../app/js/core/export.js';
 import { createLocalAdapter, copyAll, localOnlyCounts } from '../app/js/core/store.js';
 import { findPreset } from '../app/js/data/presets.js';
@@ -23,7 +23,7 @@ import { ADVICE_FORMAT, ADVICE_EXAMPLE, adviceFormatText, adviceResultPrompt, re
 
 const KURASU = findPreset('kurasu-japanese-iced');
 
-test('분쇄 표기: 110(-3) → 실제 107, 영점 0이면 괄호 없음', () => {
+test('분쇄 표기: 110(-3) → 영점 반영값 107, 영점 0이면 괄호 없음', () => {
   assert.equal(formatGrind(110, -3), '110(-3)');
   assert.equal(grindActual(110, -3), 107);
   assert.equal(formatGrind(110, 0), '110');
@@ -146,7 +146,7 @@ test('1:1 비교표: 모든 항목을 나란히, 다른 줄만 표시(시간은 
   assert.equal(byLabel['드리퍼'].differs, true);
   assert.equal(byLabel['드리퍼'].b, 'Hario V60 MUGEN 02');
   assert.equal(byLabel['온도'].differs, true);
-  assert.equal(byLabel['분쇄 크기'].a, '110(-3) (실제 107)');
+  assert.equal(byLabel['분쇄 크기'].a, '110(-3) (영점 반영값 107)');
   assert.equal(byLabel['분쇄 크기'].differs, false);
   assert.equal(byLabel['1단계 끝'].differs, false); // 1초 차이는 무시
   assert.equal(byLabel['총 시간'].differs, true);
@@ -217,27 +217,59 @@ test('되돌리기: 넘긴 단계는 한 단계 앞으로, 종료는 다시 진�
   assert.equal(back.stepIndex, 2);
 });
 
-test('방치 확인: 목표를 레시피 절반(최소 60초) 넘게 안 누르면 묻고, 5분 더 답이 없으면 끝낸다', () => {
+test('방치 확인: 다음 푸어 시간의 절반이 지나도록 안 누르면 묻고(마지막 단계는 레시피 절반), 5분 더 답이 없으면 끝낸다', () => {
   const plan = buildPlan(KURASU, 16);
   assert.equal(checkAfterSec(plan), 65); // 2:10 의 절반
-  const s = startBrew(0); // 뜸 목표 = 40초
-  assert.equal(presence(s, plan, 104_000).phase, 'ok'); // 64초 초과
-  const p = presence(s, plan, 105_000);
+  // 쿠라스: 뜸(0~40) 다음 1차 푸어 30초 → 40 + 15 = 55초, 1차(40~70) 다음 2차 푸어 60초 → 70 + 30 = 100초, 마지막(2차)은 130 + 65
+  assert.deepEqual([askGapSec(plan, 0), askGapSec(plan, 1), askGapSec(plan, 2)], [15, 30, 65]);
+  const s = startBrew(0);
+  assert.equal(presence(s, plan, 54_000).phase, 'ok');
+  const p = presence(s, plan, 55_000);
   assert.equal(p.phase, 'ask');
-  assert.equal(p.askAtSec, 105);
-  assert.equal(p.stopAtSec, 405);
-  assert.equal(presence(s, plan, 405_000).phase, 'abandon');
+  assert.equal(p.askAtSec, 55);
+  assert.equal(p.stopAtSec, 355);
+  assert.equal(presence(s, plan, 355_000).phase, 'abandon');
+  // 1차 푸어로 넘긴 뒤: 100초에 묻는다
+  const s1 = advance(s, plan, 41_000);
+  assert.equal(presence(s1, plan, 99_000).phase, 'ok');
+  assert.equal(presence(s1, plan, 100_000).phase, 'ask');
+  // 마지막 단계: 130 + 65 = 195초
+  const s2 = advance(s1, plan, 71_000);
+  assert.equal(presence(s2, plan, 194_000).phase, 'ok');
+  assert.equal(presence(s2, plan, 195_000).phase, 'ask');
   // [계속 추출] 뒤에는 그때부터 65초 뒤에 다시 묻는다
-  const a = acknowledge(s, 120_000);
-  assert.equal(presence(a, plan, 184_000).phase, 'ok');
-  assert.equal(presence(a, plan, 185_000).phase, 'ask');
-  // 답한 기록은 단계를 넘겨도 따라간다: 1차 푸어(목표 70초)로 넘겨도 120+65초 전에는 묻지 않는다
-  const n = advance(a, plan, 130_000);
-  assert.equal(n.ackAtSec, 120);
-  assert.equal(presence(n, plan, 150_000).phase, 'ok');
+  const a = acknowledge(s, 60_000);
+  assert.equal(presence(a, plan, 124_000).phase, 'ok');
+  assert.equal(presence(a, plan, 125_000).phase, 'ask');
   // 종료 뒤(되돌리기 대기)·취소 뒤에는 묻지 않는다
-  assert.equal(presence(advance(advance(n, plan, 131_000), plan, 132_000), plan, 999_000).phase, 'ok');
+  assert.equal(presence(advance(advance(s2, plan, 131_000), plan, 132_000), plan, 999_000).phase, 'ok');
   assert.equal(presence(cancel(s, 1_000), plan, 999_000).phase, 'ok');
+});
+
+test('누른 시각 고치기: 방치 확인에서 레시피 시각으로 넘기기, 저장한 기록은 시작 보정·단계별 고친 시각을 겹쳐 본다', () => {
+  const plan = buildPlan(KURASU, 16);
+  // 55초에 묻는 창에서 「레시피 시각(40초)에 넘긴 걸로」
+  const s = advance(startBrew(0), plan, 55_000, { atSec: 40 });
+  assert.deepEqual(s.stepStartsSec, [0, 40]);
+  // 지금보다 뒤·단계 시작보다 앞은 그 안으로 맞춘다
+  assert.deepEqual(advance(startBrew(0), plan, 30_000, { atSec: 40 }).stepStartsSec, [0, 30]);
+  // 저장한 기록: 1차 푸어 끝을 90 → 70 으로 고치면 2차 시작도 70, 판정도 고친 값으로
+  const b = makeBrew({ id: 'x', at: 1_000, presses: [40, 90, 130] });
+  b.result.stepFix = { 1: 70 };
+  const t = timerOf(b);
+  assert.equal(t.steps[1].actualEndSec, 70);
+  assert.equal(t.steps[1].corrected, true);
+  assert.equal(t.steps[2].actualStartSec, 70);
+  assert.equal(stepRows(b)[1].verdict.kind, 'ok');
+  assert.equal(b.timer.steps[1].actualEndSec, 90); // 타이머 기록 자체는 그대로
+  // 시작 보정: [시작]을 5초 늦게 눌렀으면 모든 누른 시각 +5, 그 위에 단계별로 고친 값을 덮는다
+  const c = makeBrew({ id: 'y', at: 1_000, presses: [36, 66, 125] });
+  c.result.startShiftSec = 5;
+  assert.deepEqual(timerOf(c).steps.map((s) => s.actualEndSec), [41, 71, 130]);
+  assert.equal(timerOf(c).totalSec, 130);
+  c.result.stepFix = { 2: 128 };
+  assert.deepEqual(timerOf(c).steps.map((s) => s.actualEndSec), [41, 71, 128]);
+  assert.equal(timerOf(c).steps[2].actualStartSec, 71);
 });
 
 test('단계 설명: 직접 쓴 문장 → 레시피 원문 → 일반 설명 → 비움', () => {
@@ -271,11 +303,11 @@ test('종료 상태: key 로 저장하고 단어로 보인다, 9/24 전 한국�
 test('참고 µm(보조값): 적었을 때만 분쇄 크기 옆에 붙고, 1:1 비교에서도 차이로 잡힌다', () => {
   const a = makeBrew({ id: 'a', at: 1_000, presses: [40, 70, 130] });
   const b = makeBrew({ id: 'b', at: 9_000_000, presses: [40, 70, 130] });
-  assert.equal(Object.fromEntries(conditionRows(a))['분쇄 크기'], '110(-3) · 실제 107');
+  assert.equal(Object.fromEntries(conditionRows(a))['분쇄 크기'], '110(-3) · 영점 반영값 107');
   b.conditions.grind.um = 650;
-  assert.equal(Object.fromEntries(conditionRows(b))['분쇄 크기'], '110(-3) · 실제 107 · 참고 약 650µm');
+  assert.equal(Object.fromEntries(conditionRows(b))['분쇄 크기'], '110(-3) · 영점 반영값 107 · 참고 약 650µm');
   const row = sideBySide(b, a).find((r) => r.label === '분쇄 크기');
-  assert.equal(row.a, '110(-3) (실제 107 · 참고 약 650µm)');
+  assert.equal(row.a, '110(-3) (영점 반영값 107 · 참고 약 650µm)');
   assert.equal(row.differs, true);
 });
 
@@ -412,7 +444,7 @@ test('컴퍼스: 시큼함 → 과소추출(가늘게), 쓴맛 매우 강함 →
   const sour = readCompass(survey({ items: { acidity: { level: 3, kinds: ['시큼한'] } } }));
   assert.equal(sour.extraction, -1);
   assert.equal(adviseNext(sour).grindUm, -30);
-  assert.match(adviseNext(sour).lines[0], /30µm 가늘게/);
+  assert.match(adviseNext(sour).lines[0], /^분쇄 조금 가늘게 \(약 30µm/);
   const bitter = readCompass(survey({ items: { bitterness: { level: 5 } } }));
   assert.equal(bitter.extraction, 2);
   assert.equal(adviseNext(bitter).grindUm, 60);
@@ -458,7 +490,7 @@ test('클릭당 µm: 설정값이 먼저, 없으면 기록의 (실제 클릭, �
   const a = adviseNext(readCompass(survey({ items: { acidity: { level: 4, kinds: ['시큼한'] } } })), { umPerClick: 10 });
   assert.equal(a.grindUm, -60);
   assert.equal(a.clicks, -6);
-  assert.match(a.lines[0], /약 6클릭 가늘게/);
+  assert.match(a.lines[0], /^분쇄 6클릭 가늘게 \(그라인더 표시값 −6/);
 });
 
 test('지난번 제안: 같은 레시피(원두를 골랐으면 같은 원두)의 가장 최근 설문 기록', () => {
@@ -648,7 +680,9 @@ test('공유창 파일 이름: 크롬이 막는 .md·.json 은 .txt 로 보낸�
 
 test('AI 공유 기본 프롬프트: 파일의 역할 이름을 그대로 쓰고, 기본 질문은 다음 추출 조정 제안', () => {
   const p = defaultSharePrompt();
-  for (const role of Object.values(SHARE_ROLES)) assert.ok(p.includes(`「${role}」`), `역할 이름이 프롬프트와 다름: ${role}`);
+  // 「고른 기록」(9/26 여러 건 공유)은 따로 쓰는 프롬프트라 한 건 공유의 세 역할만 본다
+  for (const role of ['current', 'previous', 'sameRecipeAndBean'].map((k) => SHARE_ROLES[k])) assert.ok(p.includes(`「${role}」`), `역할 이름이 프롬프트와 다름: ${role}`);
+  assert.match(defaultSharePrompt('selected'), /고른 기록 여러 건/);
   assert.match(p, /다음 추출에서 무엇을 바꾸면 좋을지/);
   assert.match(p, /지어내지 말고/);
 });
@@ -731,3 +765,148 @@ test('끌어 넘기기: 네 모서리(시스템 뒤로 가기·홈·알림창 �
   assert.equal(swipeDecision(200, 0, W, false), 'back'); // 첫 탭에서 오른쪽으로 끌기
 });
 
+test('추출 뒤 무게 칸 연동: 가수 전 + 가수 = 가수 후, 가수 후 + 추가 얼음 = 얼음 넣은 뒤 — 마지막에 고친 쪽이 원본', () => {
+  const r0 = { serverWeightG: 610, dilutionG: 0, serverAfterG: null };
+  // 가수를 적으면 가수 후 총무게가 따라온다
+  const r1 = { ...r0, dilutionG: 20, ...linkWeights(r0, 'dilutionG', 20) };
+  assert.equal(r1.serverAfterG, 630);
+  // 가수 후 총무게를 고치면 가수가 따라온다
+  const r2 = { ...r1, serverAfterG: 626, ...linkWeights(r1, 'serverAfterG', 626) };
+  assert.equal(r2.dilutionG, 16);
+  // 가수 전 총무게를 나중에 고쳐도 마지막에 고친 쪽(가수 후)을 지키고 가수를 다시 계산
+  const r3 = { ...r2, serverWeightG: 605, ...linkWeights(r2, 'serverWeightG', 605) };
+  assert.equal(r3.serverAfterG, 626);
+  assert.equal(r3.dilutionG, 21);
+  // 추가 얼음(켰을 때): 얼음 넣은 뒤 = 가수 후 + 추가 얼음, 반대로도
+  const r4 = { ...r3, iceAddedG: 40, ...linkWeights(r3, 'iceAddedG', 40, { iceOn: true }) };
+  assert.equal(r4.serverAfterIceG, 666);
+  const r5 = { ...r4, serverAfterIceG: 660, ...linkWeights(r4, 'serverAfterIceG', 660, { iceOn: true }) };
+  assert.equal(r5.iceAddedG, 34);
+  // 비율에는 추가 얼음도 들어가고, 계획 비율까지 더 넣을 양에서 뺀다
+  const b = makeBrew({ id: 'x', at: 1_000, presses: [40, 70, 130] });
+  Object.assign(b.result, { dilutionG: 10, iceAddedOn: true, iceAddedG: 30, lastWeighed: 'dilution' });
+  const dv = dilutionView(b);
+  assert.equal(dv.waterNowG, 150 + 70 + 10 + 30);
+  assert.equal(dv.moreG, -40);
+  // 추가 얼음을 안 적은 아이스 기록은 «안 넣음»이 아니라 «모름»으로 나간다
+  const c = makeBrew({ id: 'y', at: 1_000, presses: [40, 70, 130] });
+  assert.match(conditionRows(c).find(([k]) => k === '추가 얼음')[1], /기록 안 함/);
+});
+
+test('원두 노트 인식 미리 채우기: 같은 원두의 이전 기록에서 노트마다 가장 최근에 답한 값', () => {
+  const mk = (id, at, perception, beanId = 'b1') => {
+    const x = makeBrew({ id, at, presses: [40, 70, 130], bean: { id: beanId, name: '원두' } });
+    x.survey = { ...emptySurvey(), notePerception: perception };
+    return x;
+  };
+  const cur = makeBrew({ id: 'now', at: 9_000_000, presses: [40, 70, 130], bean: { id: 'b1', name: '원두' } });
+  const brews = [
+    mk('old', 1_000, { 자두: '느껴짐', 초콜릿: '약하게' }),
+    mk('mid', 2_000_000, { 자두: '안 느껴짐' }), // 자두는 이게 더 최근
+    mk('other', 3_000_000, { 초콜릿: '느껴짐' }, 'b2'), // 다른 원두는 보지 않는다
+    mk('later', 10_000_000, { 초콜릿: '느껴짐' }), // 이 기록보다 뒤에 내린 것은 보지 않는다
+  ];
+  const got = lastNotePerceptions(brews, cur, ['자두', '초콜릿', '꽃']);
+  assert.equal(got['자두'].value, '안 느껴짐');
+  assert.equal(got['초콜릿'].value, '약하게');
+  assert.equal(got['꽃'], undefined);
+});
+
+
+// ── 9/26 추가: 분쇄 측정(CSV·사진 글자) · AI 공유 편향 줄이기 · 여러 건 공유 · 배전도 숫자 · 로스터리 맛 지표 ──
+import { readMeasureCsv, clickToDial, parseHeaderText, parseStatsCells, decimalsIn, measureWarnings, snapMachine, vote, ocrDigits } from '../app/js/core/grindMeasure.js';
+import { aiSurvey, aiBrew, buildSelectionPackage } from '../app/js/core/share.js';
+import { surveyRows, measureLine } from '../app/js/core/facts.js';
+import { roastWordOf, roastLabel, profileLine } from '../app/js/core/schema.js';
+
+test('분쇄 측정 사진 글: 제목을 빼고 「그라인더 - Click」과 메모를 나눈다(줄바꿈·헷갈리는 글자 포함)', () => {
+  // 9/26 실제 캡처를 인식기가 읽은 글 그대로
+  const t = '분쇄도 분석 결과          KINGrinder K6 -\n120\n실제위치 (영점) : 125 (-5) 인도네시아 만델링 81 콩볶는사람들';
+  assert.deepEqual(parseHeaderText(t), { machine: 'KINGrinder K6', click: 120, memo: '실제위치 (영점) : 125 (-5) 인도네시아 만델링 81 콩볶는사람들' });
+  assert.equal(parseHeaderText('Comandante C40 - l2O').click, 120); // l→1, O→0
+  assert.deepEqual(parseHeaderText('메모만 있음'), { machine: null, click: null, memo: '메모만 있음' });
+});
+
+test('분쇄 측정 사진 값: 두 칸(평균 ± 정확도 / 표준편차)에서 소수 둘째 자리 수만 받는다', () => {
+  assert.deepEqual(parseStatsCells({ left: '평균 크기\n1347.69 + 141.31 um', right: '표순편차\n352.18um' }), { meanUm: 1347.69, accuracyUm: 141.31, sdUm: 352.18 });
+  assert.deepEqual(decimalsIn('1347,69 ± 141. 31'), [1347.69, 141.31]); // 쉼표·띄어 읽힌 점
+  assert.deepEqual(decimalsIn('134769'), []); // 점이 빠진 수는 받지 않는다(확인 창에서 비워 둔다)
+  assert.equal(ocrDigits('O.5l'), '0.51');
+  assert.deepEqual(vote(1.5, 1.5), { value: 1.5, sure: true, alt: null });
+  assert.deepEqual(vote(1.5, 11.5), { value: 1.5, sure: false, alt: 11.5 });
+  assert.deepEqual(vote(null, 2), { value: 2, sure: false, alt: null });
+});
+
+test('분쇄 측정 검사·그라인더 이름 붙이기', () => {
+  assert.deepEqual(measureWarnings({ meanUm: 1347.69, accuracyUm: 141.31, sdUm: 352.18, click: 120 }), {});
+  const w = measureWarnings({ meanUm: 13476.9, accuracyUm: 141.31, sdUm: 20000, click: null });
+  assert.ok(w.meanUm && w.sdUm && w.click);
+  assert.deepEqual(snapMachine('KlNGrinder K6', ['KINGrinder K6', '코만단테']), { name: 'KINGrinder K6', snapped: true });
+  assert.deepEqual(snapMachine('Timemore C3', ['KINGrinder K6']), { name: 'Timemore C3', snapped: false });
+});
+
+test('분쇄 측정 CSV: 칸 이름으로 읽고, 평균은 파일 이름에서, Click 뜻에 따라 그라인더 표시값', () => {
+  const csv = 'Index,Particles,Labels,Volume Density,Count Density,Accuracy,Machine,Click,Memo,Uid\n0,1,1000,0,50,141.31,KINGrinder K6,120,"메모, 쉼표",u1\n1,2,1500,60,30,,,,,\n2,3,2000,40,20,,,,,\n';
+  const { measurement: m, errors } = readMeasureCsv(csv, 'particle-M1347.69-3525.csv');
+  assert.deepEqual(errors, []);
+  assert.equal(m.meanUm, 1347.69);
+  assert.equal(m.meanSource, 'fileName');
+  assert.equal(m.memo, '메모, 쉼표');
+  assert.equal(m.click, 120);
+  assert.equal(m.bins.length, 3);
+  assert.equal(clickToDial(120, 'zero', -5), 125); // 영점 반영값 120 · 영점 −5 → 그라인더 표시값 125(9/26 사용자 메모와 같음)
+  assert.equal(clickToDial(120, 'dial', -5), 120);
+  assert.ok(readMeasureCsv('a,b\n1,2', 'x.csv').errors.length);
+  assert.match(measureLine({ ...m, clickMeaning: 'zero' }), /^KINGrinder K6 Click 120\(영점 반영값\) · 평균 1347\.69µm ±141\.31/);
+});
+
+test('AI 공유: 「선택 안 함」 항목은 MD·JSON 에서 빠지고, 설정 내보내기에는 그대로 남는다(9/26 사용자 결정)', () => {
+  const s = emptySurvey();
+  s.items.bitterness.level = 4;
+  s.items.body.kinds = ['부드러운']; // 강도는 안 골랐지만 종류는 골랐다 → 종류만 남긴다
+  const rows = Object.fromEntries(surveyRows(s));
+  assert.equal(rows['쓴맛'], '강함');
+  assert.equal(rows['바디감'], '부드러운');
+  assert.ok(!('단맛' in rows) && !('산미' in rows) && !('만족도' in rows));
+  assert.ok(!JSON.stringify(surveyRows(s)).includes('선택 안 함'));
+  const a = aiSurvey(s);
+  assert.deepEqual(Object.keys(a.items), ['bitterness', 'body']);
+  assert.ok(!('level' in a.items.body) && !('liking' in a));
+  // 설정 내보내기는 원래 기록 그대로(null 포함)
+  const b = { ...makeBrew({ id: 'x1', at: 1_000, presses: [40, 70, 130] }), survey: s };
+  const exp = buildExport({ brews: [b], beans: [], grinders: [] });
+  assert.equal(exp.brews[0].survey.items.sweetness.level, null);
+  assert.equal(exp.brews[0].survey.liking, null);
+});
+
+test('AI 공유: 분쇄 측정 사진(dataURL)은 공유 파일에 넣지 않는다', () => {
+  const b = makeBrew({ id: 'p1', at: 1_000, presses: [40, 70, 130] });
+  b.result.grindMeasurement = { meanUm: 1000, photo: { dataUrl: 'data:image/jpeg;base64,AAAA' } };
+  const out = aiBrew(b);
+  assert.equal(out.result.grindMeasurement.photo, undefined);
+  assert.equal(out.result.grindMeasurement.meanUm, 1000);
+  assert.ok(b.result.grindMeasurement.photo); // 원본 기록은 그대로
+});
+
+test('여러 건 골라 공유: 고른 것만 시간순, 가장 최근이 기준, 파일 이름에 건수', () => {
+  const b1 = makeBrew({ id: 's1', at: 1_000, presses: [40, 70, 130] });
+  const b2 = makeBrew({ id: 's2', at: 5_000, presses: [40, 70, 130] });
+  const b3 = makeBrew({ id: 's3', at: 3_000, presses: [40, 70, 130] });
+  const pkg = buildSelectionPackage({ brews: [b1, b2, b3], ids: ['s2', 's1'] });
+  assert.equal(pkg.scope, 'selected');
+  assert.deepEqual(pkg.relations.selected, ['s1', 's2']);
+  assert.equal(pkg.relations.current, 's2');
+  assert.deepEqual(pkg.brews.map((b) => b.roles), [['selected'], ['selected']]);
+  assert.match(shareFileName(pkg, 'md'), /-2brews\.md$/);
+  const md = toMarkdown(pkg);
+  assert.match(md, /\| 2 \(가장 최근\) \|/);
+  assert.ok(!md.includes('직전 추출(레시피·원두 무관)'));
+});
+
+test('배전도 숫자(0.5~10) → 5단계 단어, 옛 원두는 단어 그대로', () => {
+  assert.deepEqual([0.5, 2, 2.5, 4, 4.5, 6, 6.5, 8, 8.5, 10].map(roastWordOf), ['약배전', '약배전', '중약배전', '중약배전', '중배전', '중배전', '중강배전', '중강배전', '강배전', '강배전']);
+  assert.equal(roastLabel({ roastLevel: 5.5, roast: '중배전' }), '중배전 5.5/10');
+  assert.equal(roastLabel({ roastLevel: null, roast: '강배전' }), '강배전');
+  assert.equal(profileLine({ scale: 5, items: [{ label: '산미', value: 3.5 }, { label: '단맛', value: 4 }] }), '산미 3.5/5 · 단맛 4/5');
+  assert.equal(profileLine(null), '');
+});

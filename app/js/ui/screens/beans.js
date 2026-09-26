@@ -4,24 +4,32 @@
 // 9/25 사용자 요청: 이름 자동 조합(직접 적기 스위치) · 배전도 슬라이더 · 구매 무게(단위 선택) · 제조일·개봉일 ·
 //   기록으로 남은 원두 추정 · 10g 이하 알림 · 「소모」 상태(목록에서 흐리게, 준비 화면 목록에서 뺀다).
 
-import { h, fill, section, field, choiceList, tagEditor, toast, toggle, levelSlider, stepper, dateStepper, today } from '../dom.js';
+import { h, fill, section, field, choiceList, tagEditor, toast, toggle, numberSlider, chips, stepper, dateStepper, today } from '../dom.js';
 import { store } from '../../core/store.js';
 import {
   createBean, beanAutoName, beanNameIsAuto, beanStock, roastedFromBestBefore, shiftMonths, formatDay,
-  PROCESS_TYPES, ROASTS, ROAST_TICKS, BEAN_UNITS, DEFAULT_SHELF_MONTHS, LOW_BEAN_G,
+  PROCESS_TYPES, ROAST_LEVEL, ROAST_LEVEL_TICKS, roastWordOf, roastLabel, PROFILE_SCALES, PROFILE_ITEMS, BEAN_UNITS, DEFAULT_SHELF_MONTHS, LOW_BEAN_G,
 } from '../../core/schema.js';
+import { DECAF_HELP } from '../../core/words.js';
 import { beanFacts } from '../../core/facts.js';
 import { suggestNotes } from '../../core/suggest.js';
 import { logEvent } from '../../core/log.js';
 import { loadDraft, saveDraft } from './brew.js';
 import { icon } from '../icons.js';
 
-// 원두 탭 위의 [원두 | 레시피] 전환(사용자 결정 9/25 — 원두와 레시피는 둘 다 가끔 등록·수정하는 «추출 준비물»이라 한 탭에).
-// 각 칸은 주소(#/beans · #/recipes)로 가서, 옮길 때 탭처럼 옆으로 넘어간다(main.js · ui/tabSlide.js).
+// 원두 탭 위의 [원두 | 레시피 | 그라인더 | 서버] 전환 — 추출에 쓰는 «저장 항목»을 한 탭에
+// (9/25 원두·레시피, 9/26 설정에서 그라인더·서버를 옮겨 네 칸 — 사용자 요청). 칸마다 아이콘 위·이름 아래.
+// 각 칸은 주소(#/beans · #/recipes · #/grinders · #/servers)로 가서, 옮길 때 옆으로 넘어간다(main.js · ui/tabSlide.js).
+export const SEGMENT_ITEMS = [
+  ['beans', '#/beans', 'bean', '원두'],
+  ['recipes', '#/recipes', 'book', '레시피'],
+  ['grinders', '#/grinders', 'grinder', '그라인더'],
+  ['servers', '#/servers', 'beaker', '서버'],
+];
 export function beansSegment(active) {
-  const seg = (href, name, label, on) =>
-    h('a', { href, class: `seg${on ? ' on' : ''}`, role: 'tab', 'aria-selected': String(on) }, icon(name), h('span', null, label));
-  return h('div', { class: 'segment', role: 'tablist', 'aria-label': '원두와 레시피' }, seg('#/beans', 'bean', '원두', active === 'beans'), seg('#/recipes', 'book', '레시피', active === 'recipes'));
+  const seg = ([key, href, name, label]) =>
+    h('a', { href, class: `seg${key === active ? ' on' : ''}`, role: 'tab', 'aria-selected': String(key === active) }, icon(name), h('span', null, label));
+  return h('div', { class: 'segment', role: 'tablist', 'aria-label': '원두 · 레시피 · 그라인더 · 서버' }, ...SEGMENT_ITEMS.map(seg));
 }
 
 const rerender = () => window.dispatchEvent(new HashChangeEvent('hashchange'));
@@ -47,7 +55,7 @@ export function lowBeanNotice(bean, brews, via) {
 function beanRow(b, brews) {
   const st = beanStock(b, brews);
   // 이름이 좁아지지 않게 날짜·남은 양은 이름 아래 줄에 두고, 오른쪽에는 상태 표시만 둔다
-  const meta = [b.roaster, b.roast].filter(Boolean).join(' · ');
+  const meta = [b.roaster, roastLabel(b), b.decaf ? '디카페인' : null].filter(Boolean).join(' · ');
   const facts = b.status === 'consumed' ? '' : beanFacts(b, brews).join(' · ');
   return h(
     'a',
@@ -89,6 +97,18 @@ export function beanFormScreen(id) {
   let startStatus = bean.status;
   const others = () => store.list('beans');
   const usedProcesses = [...new Set([...PROCESS_TYPES, ...others().map((b) => b.process).filter(Boolean)])];
+  // 직접 넣은 가공방식에는 어느 원두에서 왔는지 붙인다(9/26 사용자 요청 — 「? (콩볶는사람들 · 인도네시아)」, 로스터리가 길면 줄임).
+  // 목록은 등록한 원두들의 값에서 만들어지므로, 그 원두의 가공방식을 고치면 목록에서도 사라진다(따로 지우는 기능은 두지 않는다).
+  const short = (s, n = 8) => (s.length > n ? `${s.slice(0, n - 1).trim()}…` : s);
+  const processLabels = Object.fromEntries(
+    usedProcesses.filter((p) => !PROCESS_TYPES.includes(p)).map((p) => {
+      const src = others().filter((b) => (b.process ?? '').trim() === p);
+      if (!src.length) return [p, p];
+      const b0 = src.find((b) => b.id !== bean.id) ?? src[0];
+      const where = b0.id === bean.id ? '이 원두' : [b0.roaster ? short(b0.roaster) : null, b0.country || null].filter(Boolean).join(' · ') || short(b0.name, 12);
+      return [p, `${p} (${where}${src.length > 1 ? ` 외 ${src.length - 1}` : ''})`];
+    }),
+  );
 
   // 글자를 치는 칸이 초점을 잃지 않게 화면 전체를 다시 그리지 않고, 바뀌는 칸만 따로 그린다.
   const nameBox = h('div', { class: 'stack' });
@@ -96,6 +116,8 @@ export function beanFormScreen(id) {
   const stockBox = h('div');
   const roastedBox = h('div', { class: 'stack' });
   const statusBox = h('div', { class: 'stack' });
+  const decafBox = h('div', { class: 'stack' });
+  const profileBox = h('div', { class: 'stack' });
 
   const text = (key, placeholder = '', after = null) =>
     h('input', { type: 'text', value: bean[key] ?? '', placeholder, onInput: (e) => { bean[key] = e.target.value; drawName(); after?.(); } });
@@ -126,7 +148,73 @@ export function beanFormScreen(id) {
     fill(
       notesBox,
       sug.length ? h('div', { class: 'hint' }, `같은 산지로 전에 등록한 노트: ${sug.join(', ')}`) : null,
-      tagEditor({ options: sug, selected: bean.notes, onChange: (v) => (bean.notes = v), placeholder: '로스터리 표기 노트' }),
+      tagEditor({ options: sug, selected: bean.notes, onChange: (v) => (bean.notes = v), placeholder: '로스터리 표기 노트', removable: true }),
+    );
+  }
+
+  // 디카페인(9/26 사용자 요청): 켜면 가공 특성 설명(설정 「보조 설명」을 따른다)과, 추출 준비의 분쇄·원두량 보조 안내가 붙는다
+  function drawDecaf() {
+    fill(
+      decafBox,
+      toggle({
+        checked: bean.decaf,
+        label: '디카페인 원두',
+        sub: { on: '추출 준비에서 분쇄를 조금 굵게, 원두량을 조금 늘리는 안내를 보입니다.', off: '카페인을 뺀 원두면 켜 주세요.' },
+        onChange: (v) => { bean.decaf = v; drawDecaf(); },
+      }),
+      bean.decaf ? h('ul', { class: 'hint sub-hint decaf-help' }, ...DECAF_HELP.map((t) => h('li', null, t))) : null,
+    );
+  }
+
+  // 로스터리 맛 지표(9/26 사용자 요청): 로스터리가 적은 「산미 3.5 · 단맛 4」를 척도(5점·10점)와 함께. 항목을 눌러 넣고, × 로 뺀다.
+  // 넣은 항목은 슬라이더를 움직여야 값이 생긴다(「선택 안 함」 — 가운데 값으로 저장하지 않는다). 값이 없는 항목은 저장하지 않는다.
+  let profScale = bean.roasterProfile?.scale ?? 5;
+  let profItems = (bean.roasterProfile?.items ?? []).map((it) => ({ ...it }));
+  const syncProfile = () => {
+    const items = profItems.filter((it) => it.value != null);
+    bean.roasterProfile = items.length ? { scale: profScale, items } : null;
+  };
+  function drawProfile() {
+    const custom = h('input', { type: 'text', placeholder: '다른 항목(예: 향미, 여운)' });
+    const addItem = (label) => {
+      const l = label.trim();
+      if (!l || profItems.some((it) => it.label === l)) return;
+      profItems.push({ label: l, value: null });
+      drawProfile();
+    };
+    custom.addEventListener('keydown', (e) => e.key === 'Enter' && (e.preventDefault(), addItem(custom.value)));
+    const step = profScale === 10 ? 2 : 1;
+    const ticks = Array.from({ length: profScale / step + 1 }, (_, i) => [i * step, String(i * step)]);
+    fill(
+      profileBox,
+      h('div', { class: 'row-line' }, h('span', { class: 'hint' }, '로스터리 표기 척도'), chips({
+        options: PROFILE_SCALES.map((n) => `${n}점`),
+        selected: `${profScale}점`,
+        onChange: (v) => {
+          const n = Number.parseInt(v, 10);
+          if (!n || n === profScale) return drawProfile();
+          // 척도를 바꾸면 적어 둔 값을 같은 비율로 옮긴다(5점 3.5 → 10점 7)
+          profItems = profItems.map((it) => ({ ...it, value: it.value == null ? null : Math.round(((it.value * n) / profScale) * 2) / 2 }));
+          profScale = n;
+          syncProfile();
+          drawProfile();
+        },
+      })),
+      ...profItems.map((it) =>
+        numberSlider({
+          label: h('div', { class: 'field-label row-line' }, it.label, h('button', { type: 'button', class: 'chip-x inline', 'aria-label': `${it.label} 빼기`, onClick: () => { profItems = profItems.filter((x) => x !== it); syncProfile(); drawProfile(); } }, h('span', { 'aria-hidden': 'true' }, '×'))),
+          min: 0,
+          max: profScale,
+          step: 0.5,
+          value: it.value,
+          ticks,
+          format: (v) => `${v} / ${profScale}`,
+          onChange: (v) => { it.value = v; syncProfile(); },
+        }),
+      ),
+      h('div', { class: 'chips' }, ...PROFILE_ITEMS.filter((l) => !profItems.some((it) => it.label === l)).map((l) => h('button', { type: 'button', class: 'chip', onClick: () => addItem(l) }, `＋ ${l}`))),
+      h('div', { class: 'row' }, custom, h('button', { type: 'button', onClick: () => addItem(custom.value) }, '추가')),
+      h('div', { class: 'hint sub-hint' }, '별·점으로 표기했으면 개수를 적습니다(★★★☆☆ → 3). 「약·중·강」 같은 말이면 5점에서 1·3·5 로 옮겨 적어 주세요.'),
     );
   }
 
@@ -250,7 +338,10 @@ export function beanFormScreen(id) {
   drawStock();
   drawRoasted();
   drawStatus();
-  const roastIndex = ROASTS.indexOf(bean.roast);
+  drawDecaf();
+  drawProfile();
+  // 9/26 전 원두: 단어만 있고 숫자가 없으면 그 단어를 알린다(숫자를 지어 채우지 않는다). 슬라이더를 만지면 숨는다.
+  const oldRoast = bean.roastLevel == null && bean.roast ? h('div', { class: 'hint' }, `지금 값: ${bean.roast}(숫자 없이 적은 옛 값). 슬라이더로 고르면 숫자로 바뀝니다.`) : null;
   return h(
     'div',
     { class: 'screen' },
@@ -263,21 +354,30 @@ export function beanFormScreen(id) {
       field('지역', text('region', '예: 예가체프')),
       field('농장·생산자', text('producer')),
       field('품종', text('variety')),
-      field('가공방식', choiceList({ options: usedProcesses, value: bean.process || null, onChange: (v) => { bean.process = v; drawName(); drawNotes(); } })),
-      // 배전도(선택): 다음 추출 제안에서 강배전의 쓴맛을 한 단계 낮춰 본다(core/compass.js)
+      field('가공방식', choiceList({ options: usedProcesses, labels: processLabels, value: bean.process || null, onChange: (v) => { bean.process = v; drawName(); drawNotes(); } })),
+      // 배전도(선택, 9/26 — 0.5 단위 0.5~10): 다음 추출 제안에서 강배전(8.5 이상)의 쓴맛을 한 단계 낮춰 본다(core/compass.js)
       h(
         'div',
         { class: 'field' },
-        levelSlider({
+        numberSlider({
           label: h('div', { class: 'field-label' }, '배전도'),
-          words: ROASTS,
-          ticks: ROAST_TICKS,
-          value: roastIndex >= 0 ? roastIndex + 1 : null,
-          onChange: (v) => (bean.roast = v == null ? '' : ROASTS[v - 1]),
+          ...ROAST_LEVEL,
+          value: bean.roastLevel,
+          ticks: ROAST_LEVEL_TICKS,
+          format: (v) => `${v} · ${roastWordOf(v)}`,
+          onChange: (v) => {
+            bean.roastLevel = v;
+            bean.roast = v == null ? '' : roastWordOf(v);
+            oldRoast?.classList.add('hidden');
+          },
         }),
-        h('div', { class: 'hint' }, '「다크 로스트」는 강배전과 같은 말입니다.'),
+        oldRoast,
+        // 설정 「보조 설명」을 끄면 숨는다(9/26 사용자 요청)
+        h('div', { class: 'hint sub-hint' }, '「다크 로스트」는 강배전과 같은 말입니다.'),
       ),
+      decafBox,
       field('노트', notesBox),
+      field('로스터리 맛 지표', profileBox),
     ),
     section(
       '보관',

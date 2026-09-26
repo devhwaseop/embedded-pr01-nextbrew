@@ -4,12 +4,14 @@ import { h, fill, section, fmtDateTime, term, toast, googleButton, modal, copyTe
 import { WORDS } from '../../core/words.js';
 import { store, loadActive, localOnlyCounts, copyAll, createLocalAdapter } from '../../core/store.js';
 import { logEvent } from '../../core/log.js';
-import { formatSec, formatDelta, beanStock, SURVEY_ITEMS, INTENSITY_WORDS, LIKING_WORDS } from '../../core/schema.js';
+import { formatSec, formatDelta, beanStock, timerOf, SURVEY_ITEMS, INTENSITY_WORDS, LIKING_WORDS } from '../../core/schema.js';
 import { lowBeanNotice } from './beans.js';
 import { sideBySide } from '../../core/diff.js';
 import { firebaseEnabled, signIn } from '../../platform/firebase.js';
 import { timerTable, conditionsList, comparisonBlock, ratioChange } from './brew.js';
 import { brewFigure, compareFigure, compassFigure } from '../charts.js';
+import { measurementOf } from '../../core/grindMeasure.js';
+import { measureSummary, measureView } from '../measureImport.js';
 import { readCompass, adviseNext, umPerClickFor } from '../../core/compass.js';
 import { readAdviceText, validateAdvice, adviceResultPrompt, currentValues, ADVICE_ITEMS, CONFIDENCE_WORDS } from '../../core/adviceImport.js';
 
@@ -18,7 +20,7 @@ function brewRow(b) {
     'a',
     { class: 'list-row', href: `#/brew/${b.id}` },
     h('div', null, h('div', null, `${b.recipe.name} · ${b.bean?.name ?? '원두 미입력'}`), h('div', { class: 'hint' }, fmtDateTime(b.timer.startedAt))),
-    h('div', { class: 'right' }, formatSec(b.timer.totalSec), h('div', { class: b.survey ? 'muted' : 'badge' }, b.survey ? '설문 완료' : '설문 대기')),
+    h('div', { class: 'right' }, formatSec(timerOf(b).totalSec), h('div', { class: b.survey ? 'muted' : 'badge' }, b.survey ? '노트 완료' : '노트 대기')),
   );
 }
 
@@ -87,18 +89,92 @@ export function homeScreen() {
     // 남은 원두가 10g 이하인 원두(사용자 요청 9/25) — 다 썼으면 그 자리에서 「소모」로 바꾼다
     ...store.list('beans').filter((x) => beanStock(x, brews).low).map((x) => lowBeanNotice(x, brews, 'home')),
     h('a', { class: 'button primary big wide', href: '#/prep' }, '추출하기'),
-    waiting.length ? section('설문을 기다리는 기록', ...waiting.map(brewRow)) : null,
+    waiting.length ? section('테이스팅 노트를 기다리는 기록', ...waiting.map(brewRow)) : null,
     section('최근 기록', ...(brews.length ? brews.slice(0, 3).map(brewRow) : [h('div', { class: 'hint' }, '아직 기록이 없습니다.')])),
   );
 }
 
+// 기록 목록(9/26 사용자 요청): 한 줄을 길게 누르면 고르기 모드 — 줄마다 체크 칸, 아래에 [취소] [공유].
+// [공유]를 누르면 AI 공유 화면(형식 MD·JSON · 프롬프트)으로 가서 고른 기록을 한 파일로 묶는다(core/share.js buildSelectionPackage).
+// 고른 ID 는 주소가 아니라 sessionStorage 에 둔다(이 탭 안에서만 — 공유 화면이 읽는다).
+export const SELECTION_KEY = 'nb.shareSelection';
+const LONG_PRESS_MS = 500; // 안드로이드·iOS 의 길게 누르기와 같은 값(0.5초)
 export function historyScreen() {
   const brews = store.brews();
-  return h('div', { class: 'screen' }, h('h1', null, `기록 (${brews.length})`), ...(brews.length ? brews.map(brewRow) : [h('div', { class: 'hint' }, '아직 기록이 없습니다.')]));
+  const root = h('div', { class: 'screen' });
+  let sel = null; // 고르기 모드면 Set
+  const enter = (id, via) => {
+    sel = new Set([id]);
+    logEvent('share.selectStart', { via, total: brews.length }, { brewId: id });
+    draw();
+  };
+  // 길게 누르기: 0.5초 누르고 있으면 고르기 모드. 그사이 손가락이 움직이면(스크롤·끌어 넘기기) 취소. 떼면 링크 이동은 막는다.
+  const longPress = (row, id) => {
+    let timer = null;
+    let start = null;
+    let fired = false;
+    const stop = () => { clearTimeout(timer); timer = null; };
+    row.addEventListener('pointerdown', (e) => {
+      fired = false;
+      start = [e.clientX, e.clientY];
+      timer = setTimeout(() => { fired = true; navigator.vibrate?.(15); enter(id, 'longpress'); }, LONG_PRESS_MS);
+    });
+    row.addEventListener('pointermove', (e) => start && Math.hypot(e.clientX - start[0], e.clientY - start[1]) > 10 && stop());
+    row.addEventListener('pointerup', stop);
+    row.addEventListener('pointercancel', stop);
+    row.addEventListener('click', (e) => fired && e.preventDefault());
+    // 안드로이드 크롬은 길게 누르면 링크 메뉴(contextmenu)를 띄운다 → 그 대신 고르기 모드
+    row.addEventListener('contextmenu', (e) => { e.preventDefault(); if (!fired) { stop(); fired = true; enter(id, 'contextmenu'); } });
+    return row;
+  };
+  const pickRow = (b) => {
+    const box = h('input', { type: 'checkbox', checked: sel.has(b.id), 'aria-label': `${b.recipe.name} 고르기` });
+    box.addEventListener('change', () => { if (box.checked) sel.add(b.id); else sel.delete(b.id); draw(); });
+    return h(
+      'label',
+      { class: `list-row pick-row${sel.has(b.id) ? ' on' : ''}` },
+      box,
+      h('div', { class: 'grow' }, h('div', null, `${b.recipe.name} · ${b.bean?.name ?? '원두 미입력'}`), h('div', { class: 'hint' }, fmtDateTime(b.timer.startedAt))),
+      h('div', { class: 'right' }, formatSec(timerOf(b).totalSec)),
+    );
+  };
+  function draw() {
+    if (!brews.length) return fill(root, h('h1', null, '기록 (0)'), h('div', { class: 'hint' }, '아직 기록이 없습니다.'));
+    if (!sel) {
+      return fill(
+        root,
+        h('h1', null, `기록 (${brews.length})`),
+        h('div', { class: 'hint sub-hint' }, '길게 누르면 여러 기록을 골라 AI 로 함께 공유할 수 있습니다.'),
+        ...brews.map((b) => longPress(brewRow(b), b.id)),
+      );
+    }
+    fill(
+      root,
+      h('h1', null, `${sel.size}건 고름`),
+      ...brews.map(pickRow),
+      h(
+        'div',
+        { class: 'select-bar' },
+        h('button', { type: 'button', onClick: () => { logEvent('share.selectCancel', { count: sel.size }); sel = null; draw(); } }, '취소'),
+        h('button', {
+          type: 'button',
+          class: 'primary',
+          disabled: sel.size === 0,
+          onClick: () => {
+            // 목록 순서(최근 먼저)가 아니라 ID 만 넘긴다 — 묶을 때 시간순으로 다시 늘어놓는다
+            sessionStorage.setItem(SELECTION_KEY, JSON.stringify([...sel]));
+            location.hash = '#/share/selected';
+          },
+        }, `공유 (${sel.size})`),
+      ),
+    );
+  }
+  draw();
+  return root;
 }
 
 function surveySummary(s) {
-  if (!s) return h('div', { class: 'hint' }, '아직 설문하지 않았습니다.');
+  if (!s) return h('div', { class: 'hint' }, '아직 테이스팅 노트를 쓰지 않았습니다.');
   const rows = [];
   for (const it of SURVEY_ITEMS) {
     const v = s.items[it.key];
@@ -144,11 +220,14 @@ function adviceSection(b) {
   const grinder = b.conditions.grind?.grinderId ? store.get('grinders', b.conditions.grind.grinderId) : null;
   const upc = umPerClickFor(grinder, store.brews());
   const adv = adviseNext(c, { umPerClick: upc?.value ?? null });
-  if (!adv) return section('다음 추출 제안', h('div', { class: 'hint' }, '설문에 답한 항목이 없어 제안하지 않습니다.'));
+  if (!adv) return section('다음 추출 제안', h('div', { class: 'hint' }, '테이스팅 노트에 답한 항목이 없어 제안하지 않습니다.'));
   return section(
     '다음 추출 제안',
     compassFigure(c),
     h('ul', { class: 'advice' }, ...adv.lines.map((l) => h('li', null, l))),
+    // 몇 클릭인지 알면 다음에 맞출 그라인더 표시값까지(9/26)
+    adv.clicks && b.conditions.grind?.dial != null ? h('div', { class: 'hint' }, `다음 그라인더 표시값: ${b.conditions.grind.dial} → ${b.conditions.grind.dial + adv.clicks}`) : null,
+    adv.grindUm && !adv.clicks ? h('div', { class: 'hint' }, '설정 → 그라인더에 클릭당 µm 를 적거나, 참고 µm 를 두 눈금 이상에서 기록하면 클릭 수로 알려 드립니다.') : null,
     adv.doseDeltaG ? h('div', { class: 'hint' }, ratioChange(b.conditions, adv.doseDeltaG)) : null,
     c.cues.length ? h('div', { class: 'hint' }, `근거: ${c.cues.map((x) => x.text).join(' · ')}`) : null,
     upc ? h('div', { class: 'source' }, `클릭당 약 ${upc.value}µm (${upc.source === 'manual' ? '설정에 적은 값' : `기록 ${upc.n}건으로 추정`})`) : null,
@@ -159,7 +238,7 @@ function adviceSection(b) {
 // AI 제안(사용자 요청 9/25 — 레시피 가져오기처럼 AI 답(JSON)을 받아 다음 추출 값을 앱에 넣는다. core/adviceImport.js).
 // 받은 제안은 이 기록에 붙고, 다음 추출 준비 화면의 [AI 제안대로 맞추기]가 쓴다.
 const NEXT_ROWS = [
-  ['grindDial', '분쇄 다이얼', ''],
+  ['grindDial', '그라인더 표시값', ''],
   ['doseG', '원두량', 'g'],
   ['hotWaterG', '뜨거운 물', 'g'],
   ['tempC', '물 온도', '℃'],
@@ -294,9 +373,10 @@ export function detailScreen(id) {
     'div',
     { class: 'screen' },
     h('h1', null, b.recipe.name),
-    h('div', { class: 'hint' }, `${fmtDateTime(b.timer.startedAt)} · 총 ${formatSec(b.timer.totalSec)} (레시피 ${formatSec(b.timer.plannedTotalSec)})`),
+    h('div', { class: 'hint' }, `${fmtDateTime(b.timer.startedAt)} · 총 ${formatSec(timerOf(b).totalSec)} (레시피 ${formatSec(b.timer.plannedTotalSec)})`),
     section('지난 추출과 비교', ...lines.filter((l) => l.tagName !== 'A'), prev.partner ? compareFigure(b, prev.partner, '지난 추출') : null, prev.partner ? compareTable(b, prev.partner, prev.partnerKind) : null),
     section('타이머', timerTable(b), brewFigure(b)),
+    measurementOf(b) ? section('분쇄 측정', h('div', { class: 'hint' }, measureSummary(measurementOf(b))), measureView(measurementOf(b))) : null,
     section('조건', conditionsList(b)),
     section('맛', surveySummary(b.survey)),
     adviceSection(b),
@@ -305,7 +385,7 @@ export function detailScreen(id) {
       'div',
       { class: 'row wrap' },
       h('a', { class: 'button', href: `#/brew/${b.id}/result` }, '결과 수정'),
-      h('a', { class: 'button primary', href: `#/brew/${b.id}/survey` }, b.survey ? '설문 수정' : '맛 설문하기'),
+      h('a', { class: 'button primary', href: `#/brew/${b.id}/survey` }, b.survey ? '테이스팅 노트 수정' : '테이스팅 노트 쓰기'),
       h('a', { class: 'button', href: `#/brew/${b.id}/share` }, 'AI로 공유'),
     ),
   );

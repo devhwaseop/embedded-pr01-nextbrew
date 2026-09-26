@@ -2,8 +2,11 @@
 // - 담는 기록: 이번 추출 + 직전 추출(레시피·원두 무관) + 레시피와 원두가 같은 가장 최근 추출(있을 때만)
 // - 같은 기록이 두 역할이면 한 번만 넣고 역할을 둘 다 적는다(AI가 두 건으로 오해하지 않게).
 // - JSON = 데이터로 보관하기 좋은 형식, MD = AI에게 질문할 때 붙이기 좋은 형식. 로그는 넣지 않는다.
+// - 기록 목록에서 여러 건을 골라 한 파일로 묶을 수도 있다(9/26 사용자 요청 — buildSelectionPackage).
+// - AI 공유는 «한 번의 상황 판단»이라 편향을 줄이는 것이 먼저다(9/26 사용자 판단 기준): 「선택 안 함」 항목은 값이 아니므로
+//   파일에 아예 넣지 않는다(aiBrew · facts.js surveyRows). 설정의 JSON 내보내기(core/export.js)는 데이터 보관이라 형식을 맞추려고 그대로 둔다.
 
-import { SCHEMA_VERSION, formatSec } from './schema.js';
+import { SCHEMA_VERSION, formatSec, timerOf, roastLabel, profileLine } from './schema.js';
 import { APP_NAME } from './export.js';
 import { beanKey } from './diff.js';
 import { adviceFormatText } from './adviceImport.js';
@@ -15,7 +18,38 @@ export const SHARE_ROLES = {
   current: '이번 추출',
   previous: '직전 추출(레시피·원두 무관)',
   sameRecipeAndBean: '레시피와 원두가 같은 가장 최근 추출',
+  selected: '고른 기록',
 };
+
+// AI 에게 보내는 기록 한 건: 「선택 안 함」(null) 테이스팅 항목을 빼고, 분쇄 측정 사진(dataURL)은 뺀다(파일이 커지고 AI 판단에 안 쓰인다).
+// 항목을 고르지 않았어도 종류·메모를 적었으면 그것만 남긴다.
+export function aiSurvey(s) {
+  if (!s) return s;
+  const items = {};
+  for (const [k, v] of Object.entries(s.items ?? {})) {
+    if (v.level != null) items[k] = v;
+    else if (v.kinds?.length || v.note) {
+      const { level, ...rest } = v;
+      items[k] = rest;
+    }
+  }
+  const { liking, items: _, ...rest } = s;
+  return { ...rest, items, ...(liking != null ? { liking } : {}) };
+}
+const noPhoto = (m) => {
+  if (!m?.photo) return m;
+  const { photo, ...rest } = m;
+  return rest;
+};
+export function aiBrew(b) {
+  const g = b.conditions?.grind;
+  return {
+    ...b,
+    conditions: g?.measurement ? { ...b.conditions, grind: { ...g, measurement: noPhoto(g.measurement) } } : b.conditions,
+    result: b.result?.grindMeasurement ? { ...b.result, grindMeasurement: noPhoto(b.result.grindMeasurement) } : b.result,
+    survey: aiSurvey(b.survey),
+  };
+}
 
 export function findShareRelations(brews, current) {
   const earlier = brews
@@ -57,7 +91,7 @@ export function buildSharePackage({ brews, beans = [], current, now = Date.now()
     if (snapshot && !recipes[recipe.id]) recipes[recipe.id] = snapshot;
     const bean = brew.bean?.id ? beans.find((x) => x.id === brew.bean.id) : null;
     if (bean) beanInfo[bean.id] = stripMeta(bean);
-    return { roles, ...brew, recipe };
+    return { roles, ...aiBrew(brew), recipe };
   });
 
   return {
@@ -74,18 +108,60 @@ export function buildSharePackage({ brews, beans = [], current, now = Date.now()
   };
 }
 
+// 여러 건 골라 공유(9/26 사용자 요청 — 기록 목록을 길게 눌러 고른다): 고른 기록만 시간순으로. 역할은 모두 「고른 기록」,
+// relations.current = 가장 최근 것(AI 가 결과 JSON 의 brewId 로 쓴다), relations.selected = 고른 순서가 아니라 시간순 ID.
+export function buildSelectionPackage({ brews, beans = [], ids, now = Date.now() }) {
+  const picked = brews.filter((b) => ids.includes(b.id)).sort((a, b) => a.timer.startedAt - b.timer.startedAt);
+  const recipes = {};
+  const beanInfo = {};
+  const list = picked.map((brew) => {
+    const { snapshot, ...recipe } = brew.recipe;
+    if (snapshot && !recipes[recipe.id]) recipes[recipe.id] = snapshot;
+    const bean = brew.bean?.id ? beans.find((x) => x.id === brew.bean.id) : null;
+    if (bean) beanInfo[bean.id] = stripMeta(bean);
+    return { roles: ['selected'], ...aiBrew(brew), recipe };
+  });
+  return {
+    app: APP_NAME,
+    kind: 'share',
+    scope: 'selected',
+    schemaVersion: SCHEMA_VERSION,
+    createdAt: new Date(now).toISOString(),
+    roles: { selected: SHARE_ROLES.selected },
+    relations: { current: picked[picked.length - 1]?.id ?? null, previous: null, sameRecipeAndBean: null, selected: picked.map((b) => b.id) },
+    brews: list,
+    recipes,
+    beans: beanInfo,
+  };
+}
+
 // AI 에게 보낼 기본 프롬프트(사용자 결정 9/25 — 기본 질문 = 다음 추출 조정 제안).
+// kind = 'one'(기록 한 건 + 비교 기록) | 'selected'(목록에서 고른 여러 건 — 9/26). 고친 글은 종류마다 따로 남는다(설정 sharePrompt · sharePromptSelected).
 // 공유 화면에서 보고·고치고·복사한다. 고친 글은 설정 sharePrompt 에 남는다(비우거나 기본으로 되돌리면 이 글).
 // 공유 파일에는 AI 에게 하는 말이 없고 기록만 있어서 이 글이 질문 역할을 한다. 역할 이름은 파일 표기(SHARE_ROLES)를 그대로 쓴다.
-export function defaultSharePrompt() {
+export function defaultSharePrompt(kind = 'one') {
+  const intro = kind === 'selected'
+    ? [
+        '첨부한 파일은 핸드드립 추출 기록 앱 NextBrew 에서 제가 고른 기록 여러 건입니다(.txt 안에 Markdown 또는 JSON, 시간순).',
+        '가장 아래(가장 최근) 기록이 다음 추출의 출발점이고, 나머지는 비교용입니다. 기록 사이에 무엇이 바뀌었고 맛이 어떻게 달라졌는지 함께 봐 주세요.',
+        '',
+        '이 기록들을 보고 다음 추출에서 무엇을 바꾸면 좋을지 제안해 주세요.',
+      ]
+    : [
+        '첨부한 파일은 핸드드립 추출 기록 앱 NextBrew 에서 내보낸 기록입니다(.txt 안에 Markdown 또는 JSON).',
+        `「${SHARE_ROLES.current}」이 방금 내린 커피이고, 「${SHARE_ROLES.previous}」과 「${SHARE_ROLES.sameRecipeAndBean}」은 비교용입니다. 파일에 없으면 없는 대로 봐 주세요.`,
+        '',
+        '이 기록을 보고 다음 추출에서 무엇을 바꾸면 좋을지 제안해 주세요.',
+      ];
   return [
-    '첨부한 파일은 핸드드립 추출 기록 앱 NextBrew 에서 내보낸 기록입니다(.txt 안에 Markdown 또는 JSON).',
-    `「${SHARE_ROLES.current}」이 방금 내린 커피이고, 「${SHARE_ROLES.previous}」과 「${SHARE_ROLES.sameRecipeAndBean}」은 비교용입니다. 파일에 없으면 없는 대로 봐 주세요.`,
-    '',
-    '이 기록을 보고 다음 추출에서 무엇을 바꾸면 좋을지 제안해 주세요.',
+    ...intro,
     '- 한 번에 한두 가지만 바꿉니다. 분쇄(굵게·가늘게 — 그라인더 클릭이나 µm), 원두량(물은 그대로), 물 온도 중에서 고르고, 얼마나 바꿀지 숫자로 적어 주세요.',
-    '- 제안마다 기록의 어떤 값(맛 설문·타이머·조건)을 근거로 했는지 적어 주세요.',
+    '- 제안마다 기록의 어떤 값(테이스팅 노트·타이머·조건)을 근거로 했는지 적어 주세요.',
     '- 기록에 없는 값은 지어내지 말고, 판단에 꼭 필요한 정보가 빠졌으면 먼저 물어봐 주세요.',
+    // 9/26 사용자 요청: 추가 얼음을 안 적은 아이스 기록을 «안 넣음»으로 읽지 않게
+    '- 아이스 기록의 「추가 얼음」이 「기록 안 함」이면, 마실 때 얼음을 더 넣었을 수 있지만 양은 모른다는 뜻입니다(0g 이 아닙니다).',
+    // 9/26 사용자 결정: 「선택 안 함」 항목은 파일에서 뺀다 — 빠진 항목을 «없음»으로 읽지 않게
+    '- 테이스팅 노트에 없는 항목은 제가 고르지 않은 것입니다. 없는 항목은 판단에 쓰지 말아 주세요.',
     '',
     // 결과를 앱으로 가져오기(사용자 결정 9/25 「둘 다」): 형식은 처음부터 주고, 결론이 나면 한 번만 묻는다
     '결론이 나면 대화 끝에 한 번만 「앱에 넣을 결과(JSON)를 드릴까요?」라고 물어봐 주세요. 제가 달라고 하면 아래 형식으로 주세요.',
@@ -101,9 +177,10 @@ export function shareSheetName(name) {
 }
 
 export function shareFileName(pkg, format) {
-  const cur = pkg.brews.find((b) => b.roles.includes('current'));
+  const cur = pkg.brews.find((b) => b.id === pkg.relations.current) ?? pkg.brews[pkg.brews.length - 1];
   const stamp = formatDateTime(cur.timer.startedAt).replace(/[-:]/g, '').replace(' ', '-');
-  return `nextbrew-${stamp}.${format}`;
+  // 여러 건 골라 공유(9/26)는 건수를 붙인다: nextbrew-20260926-0712-3brews.md
+  return `nextbrew-${stamp}${pkg.scope === 'selected' ? `-${pkg.brews.length}brews` : ''}.${format}`;
 }
 
 // ── 파일 내용 ────────────────────────────────────────────────
@@ -127,9 +204,12 @@ export function toMarkdown(pkg) {
 
   out.push(`# ${APP_NAME} 추출 기록`, '');
   out.push(`만든 시각: ${formatDateTime(Date.parse(pkg.createdAt))} · 기록 ${pkg.brews.length}건`, '');
+  if (pkg.scope === 'selected') {
+    out.push(table(['순서(시간순)', '기록'], pkg.brews.map((b, i) => [`${i + 1}${b.id === pkg.relations.current ? ' (가장 최근)' : ''}`, brewTitle(b)])), '');
+  }
   // 「이 기록만」이면 비교 기록이 «없는» 게 아니라 «담지 않은» 것이다 — AI 가 이전 기록이 없다고 오해하지 않게
   const none = pkg.scope === 'single' ? '담지 않음(이 기록만 공유)' : '없음';
-  out.push(
+  if (pkg.scope !== 'selected') out.push(
     table(['역할', '기록'], [
       [SHARE_ROLES.current, brewTitle(cur)],
       [SHARE_ROLES.previous, prev ? brewTitle(prev) : none],
@@ -151,11 +231,11 @@ export function toMarkdown(pkg) {
         stepRows(b).map((s) => [s.label, `${s.targetCumG}g`, formatSec(s.plannedEndSec), formatSec(s.actualEndSec), s.verdict?.text ?? '—']),
       ),
       '',
-      `총 ${formatSec(b.timer.totalSec)} (레시피 ${formatSec(b.timer.plannedTotalSec)})`,
+      `총 ${formatSec(timerOf(b).totalSec)} (레시피 ${formatSec(b.timer.plannedTotalSec)})`,
       '',
     );
     const s = surveyRows(b.survey);
-    out.push('### 맛', '', s ? table(['항목', '값'], s) : '아직 설문하지 않았습니다.', '');
+    out.push('### 맛', '', s ? table(['항목', '값'], s) : '아직 테이스팅 노트를 쓰지 않았습니다.', '');
   }
 
   for (const r of Object.values(pkg.recipes)) {
@@ -176,10 +256,13 @@ export function toMarkdown(pkg) {
       ['생산자', bean.producer],
       ['품종', bean.variety],
       ['가공방식', bean.process],
-      ['배전도', bean.roast],
+      ['배전도', roastLabel(bean)],
+      // 디카페인은 켰을 때만(꺼짐 = 기본값이라 적지 않는다), 로스터리 맛 지표는 척도와 함께(9/26)
+      ['디카페인', bean.decaf ? '예' : ''],
       ['제조일(로스팅일)', bean.roastedOn ? `${bean.roastedOn}${bean.roastedOnFrom ? ` (소비기한 ${bean.roastedOnFrom.bestBefore} − ${bean.roastedOnFrom.months}개월 추정)` : ''}` : ''],
       ['개봉일', bean.openedOn],
       ['노트', (bean.notes ?? []).join(', ')],
+      ['로스터리 맛 지표', profileLine(bean.roasterProfile)],
       ['메모', bean.memo],
     ].filter(([, v]) => v);
     out.push(rows.length ? table(['항목', '값'], rows) : '등록된 정보가 없습니다.', '');
