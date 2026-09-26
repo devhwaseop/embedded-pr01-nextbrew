@@ -1,7 +1,8 @@
 // NextBrew 데이터 형식 — 기록(brew)·원두(bean)·그라인더(grinder)의 모양과 표시 규칙을 이 파일 한 곳에서 정한다.
 // 다른 파일은 여기서 만든 객체를 쓰고, 필드를 새로 지어내지 않는다.
 
-export const SCHEMA_VERSION = 1;
+// 2 = 드리퍼 등록(기록에 dripperId)·배전도 숫자(roastLevel)·분쇄 측정 모음(9/26). 옛 문서는 불러올 때 올린다(core/migrate.js)
+export const SCHEMA_VERSION = 2;
 
 export function newId(prefix, now = Date.now()) {
   const rand = Math.random().toString(36).slice(2, 8);
@@ -33,6 +34,12 @@ export function formatSec(sec) {
 export function formatDelta(sec) {
   const s = Math.round(sec);
   return `${s > 0 ? '+' : s < 0 ? '−' : '±'}${Math.abs(s)}초`;
+}
+
+// 화면·공유에 보이는 숫자(9/26 사용자 요청): 소수 셋째 자리에서 반올림해 둘째 자리까지만 — 16.1 + 0.2 = 16.300000000000004 같은 끝없는 소수가 보이지 않게.
+// 뒤에 0 은 붙이지 않는다(16.5 → 16.5, 250 → 250). 값이 없으면 그대로 돌려준다.
+export function n2(x) {
+  return typeof x === 'number' && Number.isFinite(x) ? Math.round(x * 100) / 100 : x;
 }
 
 export function round1(x) {
@@ -84,6 +91,7 @@ export const SURVEY_ITEMS = [
 ];
 
 // 잡미: 강도 척도 대신 고르는 칩. 영문 통상어 + 괄호 한국어 묘사.
+// 잡미는 안 고르면 «없음»이다(9/26 사용자 판단 — 산미처럼 «약함»과 헷갈릴 값이 없어, 안 고른 것과 없음이 같은 뜻). 「없음」 칩은 두지 않는다.
 export const OFF_FLAVORS = [
   'Chalky (가루 섞인 느낌)',
   'Mouth-Drying (입안이 마르는)',
@@ -115,7 +123,7 @@ export function emptySurvey() {
 }
 
 // ── 준비 화면 선택지(초기 목록 — 조사 후 보강 예정, 직접 입력 가능) ──
-export const DRIPPERS = ['Hario V60 02', 'Hario V60 MUGEN 02'];
+export const DRIPPERS = ['Hario V60 02', 'Hario V60 MUGEN 02']; // 앱 기본 드리퍼 이름 — 특징은 data/drippers.js DRIPPER_SEEDS 로 기본 목록과 잇는다(9/26)
 export const FILTERS = ['표백 종이 필터', '무표백 종이 필터'];
 export const POUR_METHODS = ['나선형', '센터 푸어', '원 푸어'];
 export const PROCESS_TYPES = ['워시드', '내추럴']; // SCA 외재적 평가 양식의 유형. 그 밖은 직접 입력.
@@ -135,8 +143,9 @@ export function roastWordOf(level) {
   return ROASTS[Math.min(4, Math.max(0, Math.ceil(level / 2) - 1))];
 }
 // 목록·공유에 보일 배전도: 「중배전 5.5/10」 · 옛 원두는 「중배전」
+// 옛 단어에서 옮긴 숫자(roastLevelFrom 'word' — core/migrate.js)는 「약」을 붙여 정확한 값이 아님을 보인다
 export function roastLabel(bean) {
-  if (bean?.roastLevel != null) return `${roastWordOf(bean.roastLevel)} ${bean.roastLevel}/10`;
+  if (bean?.roastLevel != null) return `${roastWordOf(bean.roastLevel)} ${bean.roastLevelFrom === 'word' ? '약 ' : ''}${bean.roastLevel}/10`;
   return bean?.roast || '';
 }
 
@@ -168,7 +177,8 @@ export function createBrew({ id = null, recipe, plan, prep, timer, now = Date.no
       name: recipe.name,
       snapshot: structuredClone(recipe), // 레시피를 나중에 고쳐도 이 기록은 그때 그대로
     },
-    bean: prep.bean ? { id: prep.bean.id ?? null, name: prep.bean.name } : null,
+    // 블렌드 템플릿으로 섞었으면(9/26) blendId·parts[{ id, name, ratio, g }]가 붙는다(core/blend.js)
+    bean: prep.bean ? { id: prep.bean.id ?? null, name: prep.bean.name, ...(prep.bean.blendId ? { blendId: prep.bean.blendId, parts: prep.bean.parts } : {}) } : null,
     conditions: {
       style: prep.style, // 'iced' | 'hot'
       doseG: plan.doseG,
@@ -177,7 +187,8 @@ export function createBrew({ id = null, recipe, plan, prep, timer, now = Date.no
       iceTargetG: plan.iceTargetG ?? plan.iceG, // 레시피가 권한 얼음(원두량 × 레시피 비율) — 모자란 만큼 가수로 채운다(9/25)
       tempC: prep.tempC,
       grind: prep.grind, // { grinderId, grinderName, dial, zeroOffset, um }
-      dripper: prep.dripper,
+      dripper: prep.dripper, // 이름(드리퍼를 지웠을 때 남는 마지막 이름) — 표시는 등록값을 따른다
+      dripperId: prep.dripperId ?? null, // 9/26 등록 드리퍼 ID
       filter: prep.filter,
       rinsed: prep.rinsed,
       pourMethod: prep.pourMethod,
@@ -194,6 +205,7 @@ export function createBrew({ id = null, recipe, plan, prep, timer, now = Date.no
       server: null, // 선택: 잰 서버 { id(등록한 서버면), name, tareG(서버 자체 무게) } — 등록값을 복사해 둔다
     },
     survey: null,
+    followedAdvice: prep.followedAdvice ?? null, // 9/26 이 추출이 따른 AI 제안(core/adviceImport.js followRecord) — 없으면 null
     updatedAt: new Date(now).toISOString(),
   };
 }
@@ -215,6 +227,7 @@ export function createBean(fields = {}, now = Date.now()) {
     decaf: false, // 디카페인(9/26) — 추출 준비에서 분쇄·원두량 보조 안내
     roasterProfile: null, // 로스터리 맛 지표(9/26) { scale, items: [{ label, value }] }
     notes: [], // 로스터리가 표기한 노트
+    blend: null, // 9/26 블렌드 — null = 싱글 오리진, { by: 'roaster'|'me', parts } (core/blend.js)
     memo: '',
     purchased: null, // 구매 무게 { amount, unit(BEAN_UNITS 키) } — 남은 원두 추정의 출발점
     roastedOn: null, // 제조일(로스팅일) 'YYYY-MM-DD'
@@ -246,13 +259,30 @@ export function purchasedGrams(b) {
 }
 
 // 남은 원두 추정 = 구매 무게 − 이 원두로 남긴 기록들의 원두량 합. 기록 없이 쓴 원두·흘린 양은 모른다(추정).
+// 블렌드(9/26, core/blend.js): 템플릿으로 섞어 내린 기록은 그 기록에서 이 원두에 나눈 무게만 센다.
+// 미리 섞어 둔 블렌드(beans 에서 blend.by 'me')에 넣은 무게는 «섞음»으로 뺀다. 그 블렌드 자신의 양 = 섞은 무게 합.
 export const LOW_BEAN_G = 10; // 이 값 이하이면 «거의 다 씀» 알림(사용자 요청 9/25)
-export function beanStock(b, brews) {
-  const total = purchasedGrams(b);
-  const mine = (brews ?? []).filter((x) => x.bean?.id === b.id);
-  const usedG = round1(mine.reduce((a, x) => a + (Number(x.conditions?.doseG) || 0), 0));
-  const remainingG = total == null ? null : round1(total - usedG);
-  return { totalG: total, usedG, brews: mine.length, remainingG, low: remainingG != null && remainingG <= LOW_BEAN_G && b.status !== 'consumed' };
+export function beanStock(b, brews, beans = []) {
+  const mixedByMe = b.blend?.by === 'me' ? (b.blend.parts ?? []).reduce((a, p) => a + (Number(p.g) || 0), 0) : null;
+  const total = mixedByMe != null ? round1(mixedByMe) : purchasedGrams(b);
+  let usedG = 0;
+  let count = 0;
+  for (const x of brews ?? []) {
+    if (x.bean?.id === b.id) {
+      usedG += Number(x.conditions?.doseG) || 0;
+      count += 1;
+    } else {
+      const part = x.bean?.parts?.find((p) => p.id === b.id);
+      if (part) {
+        usedG += Number(part.g) || 0;
+        count += 1;
+      }
+    }
+  }
+  const mixedG = round1((beans ?? []).filter((o) => o.id !== b.id && o.blend?.by === 'me').reduce((a, o) => a + (o.blend.parts ?? []).filter((p) => p.beanId === b.id).reduce((s, p) => s + (Number(p.g) || 0), 0), 0));
+  usedG = round1(usedG);
+  const remainingG = total == null ? null : round1(total - usedG - mixedG);
+  return { totalG: total, usedG, brews: count, mixedG, remainingG, low: remainingG != null && remainingG <= LOW_BEAN_G && b.status !== 'consumed' };
 }
 
 // 날짜: 'YYYY-MM-DD' 를 그 나라 시간의 자정으로 읽는다(UTC 로 읽으면 하루가 밀린다)
@@ -364,6 +394,44 @@ export function createServer(fields = {}, now = Date.now()) {
     id: fields.id ?? newId('server', now),
     name: '',
     tareG: null,
+    ...fields,
+    updatedAt: new Date(now).toISOString(),
+  };
+}
+
+// 드리퍼(9/26 신설): 이름만. 기록은 ID 로 가리키고 이름은 등록값을 따른다(core/migrate.js syncRefs)
+// 드리퍼(9/26): 기본 목록(data/drippers.js)·AI 답·직접 입력 모두 같은 칸을 쓴다(사용자 결정 — 형식 통일). 모르는 칸은 null.
+export function createDripper(fields = {}, now = Date.now()) {
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    id: fields.id ?? newId('dripper', now),
+    name: '',
+    catalogKey: null, // 기본 목록에서 왔으면 그 키
+    brand: null,
+    model: null,
+    size: null, // 01·02·155 처럼 모델 안의 크기
+    cups: null, // 잔 수·용량(출처 표기 그대로)
+    shape: null, // DRIPPER_SHAPES 키
+    method: null, // DRIPPER_METHODS 키
+    holes: null,
+    ribs: null,
+    material: null, // 이 드리퍼의 재질(기본 목록에 여러 가지면 고른 것)
+    filter: null,
+    note: '', // 특징·메모
+    sources: [], // [{ kind(maker|seller|ai|user), label, url, checkedAt }]
+    ...fields,
+    updatedAt: new Date(now).toISOString(),
+  };
+}
+
+// 분쇄 측정(9/26 — 원두마다 분쇄가 다르다고 보아 원두별로 모은다): { beanId, grinderId, 측정 값…, photo(계정 저장일 때만) }.
+// 기록에는 사진을 뺀 사본과 measurementId 를 둔다(사진은 이 문서에만 — Firestore 문서 한도 1MiB).
+export function createMeasurement(fields = {}, now = Date.now()) {
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    id: fields.id ?? newId('measure', now),
+    beanId: null,
+    grinderId: null,
     ...fields,
     updatedAt: new Date(now).toISOString(),
   };

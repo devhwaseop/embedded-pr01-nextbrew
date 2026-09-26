@@ -4,7 +4,7 @@ import { SCHEMA_VERSION } from './schema.js';
 
 export const APP_NAME = 'NextBrew';
 
-export function buildExport({ brews, beans, grinders, servers = [], recipes = [], logs = null, now = Date.now() }) {
+export function buildExport({ brews, beans, grinders, servers = [], recipes = [], drippers = [], measurements = [], blends = [], logs = null, now = Date.now() }) {
   const out = {
     app: APP_NAME,
     schemaVersion: SCHEMA_VERSION,
@@ -14,6 +14,9 @@ export function buildExport({ brews, beans, grinders, servers = [], recipes = []
     grinders,
     servers,
     recipes,
+    drippers, // 9/26
+    measurements, // 9/26 분쇄 측정(계정 저장이면 사진 dataURL 포함)
+    blends, // 9/26 블렌드 템플릿(추출할 때 섞는 비율)
   };
   if (logs) out.logs = logs;
   return out;
@@ -35,6 +38,9 @@ export function parseImport(text) {
     grinders: Array.isArray(data.grinders) ? data.grinders : [],
     servers: Array.isArray(data.servers) ? data.servers : [], // 9/24 추가 — 옛 파일에는 없다
     recipes: Array.isArray(data.recipes) ? data.recipes : [], // 9/24 추가(가져온 레시피)
+    drippers: Array.isArray(data.drippers) ? data.drippers : [], // 9/26 추가 — 옛 파일에는 없다(기록의 드리퍼 이름으로 불러올 때 만든다)
+    measurements: Array.isArray(data.measurements) ? data.measurements : [], // 9/26 추가
+    blends: Array.isArray(data.blends) ? data.blends : [], // 9/26 추가(블렌드 템플릿)
     logs: Array.isArray(data.logs) ? data.logs : [],
   };
 }

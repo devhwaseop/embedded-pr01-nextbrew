@@ -12,7 +12,7 @@ import { PRESETS, findPreset } from '../../data/presets.js';
 import { userRecipes } from '../../core/recipeBook.js';
 import { recipePrompt, toImportFormat, readRecipeText, validateRecipeImport, blankRecipe } from '../../core/recipeImport.js';
 import { buildPlan, recipeTags, formatRatio } from '../../core/recipe.js';
-import { formatSec } from '../../core/schema.js';
+import { n2, formatSec } from '../../core/schema.js';
 import { planFigure } from '../charts.js';
 
 // 프롬프트 예시 = 앱에 들어 있는 쿠라스 프리셋(형식·검사기와 어긋나지 않게 테스트가 묶는다)
@@ -210,13 +210,13 @@ export function recipesScreen() {
       h('div', { class: 'field-label' }, '미리 보기'),
       h('div', null, h('b', null, r.name)),
       tags(recipeTags(r)),
-      h('div', { class: 'hint' }, [`원두 ${plan.doseG}g`, `뜨거운 물 ${plan.hotWaterG}g`, `원두와 물의 비율 ${formatRatio(plan.ratioHot)}`, ice ? `얼음 ${ice}g` : null, r.tempC != null ? `${r.tempC}℃` : null, r.grindNote || null].filter(Boolean).join(' · ')),
+      h('div', { class: 'hint' }, [`원두 ${n2(plan.doseG)}g`, `뜨거운 물 ${n2(plan.hotWaterG)}g`, `원두와 물의 비율 ${formatRatio(plan.ratioHot)}`, ice ? `얼음 ${n2(ice)}g` : null, r.tempC != null ? `${r.tempC}℃` : null, r.grindNote || null].filter(Boolean).join(' · ')),
       planFigure(plan),
       h(
         'table',
         { class: 'plan' },
         h('tr', null, h('th', null, '단계'), h('th', null, '시작'), h('th', null, '저울 누적 목표')),
-        ...plan.steps.map((s) => h('tr', null, h('td', null, s.label), h('td', null, formatSec(s.startSec)), h('td', null, `${s.targetCumG}g`))),
+        ...plan.steps.map((s) => h('tr', null, h('td', null, s.label), h('td', null, formatSec(s.startSec)), h('td', null, `${n2(s.targetCumG)}g`))),
         h('tr', null, h('td', null, '종료 목표'), h('td', null, formatSec(plan.endSec)), h('td', null, '')),
       ),
       h('div', { class: 'hint' }, '원문과 숫자가 맞는지 한 번 대조해 주세요 — 특히 단계 시각과 누적 물. 형식은 앱이 검사하지만, AI 가 숫자를 잘못 옮긴 것은 앱이 알 수 없습니다.'),
@@ -264,7 +264,7 @@ export function recipesScreen() {
   function recipeRow(r, mine) {
     return h(
       'div',
-      { class: 'recipe-row' },
+      { class: 'recipe-row list-row' }, // 칸 안의 상자(9/26 — 기록·원두 목록과 같은 모양)
       h('div', null, h('div', null, r.name), tags(recipeTags(r))),
       mine
         ? h('div', { class: 'row' }, h('button', { type: 'button', onClick: () => startEdit(r) }, '수정'), h('button', { type: 'button', onClick: () => remove(r) }, '지우기'))

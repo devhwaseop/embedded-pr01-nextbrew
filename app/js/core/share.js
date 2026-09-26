@@ -6,10 +6,12 @@
 // - AI 공유는 «한 번의 상황 판단»이라 편향을 줄이는 것이 먼저다(9/26 사용자 판단 기준): 「선택 안 함」 항목은 값이 아니므로
 //   파일에 아예 넣지 않는다(aiBrew · facts.js surveyRows). 설정의 JSON 내보내기(core/export.js)는 데이터 보관이라 형식을 맞추려고 그대로 둔다.
 
-import { SCHEMA_VERSION, formatSec, timerOf, roastLabel, profileLine } from './schema.js';
+import { n2, SCHEMA_VERSION, formatSec, timerOf, roastLabel, profileLine } from './schema.js';
 import { APP_NAME } from './export.js';
 import { beanKey } from './diff.js';
-import { adviceFormatText } from './adviceImport.js';
+import { adviceFormatText, followLines } from './adviceImport.js';
+import { BLEND_KINDS, blendKind, partsLine, brewBeanIds } from './blend.js';
+import { DRIPPER_SHAPES, DRIPPER_METHODS, SOURCE_KINDS } from '../data/drippers.js';
 import { conditionRows, stepRows, surveyRows } from './facts.js';
 import { WORDS } from './words.js';
 import { formatRatio } from './recipe.js';
@@ -21,7 +23,7 @@ export const SHARE_ROLES = {
   selected: '고른 기록',
 };
 
-// AI 에게 보내는 기록 한 건: 「선택 안 함」(null) 테이스팅 항목을 빼고, 분쇄 측정 사진(dataURL)은 뺀다(파일이 커지고 AI 판단에 안 쓰인다).
+// AI 에게 보내는 기록 한 건: 「선택 안 함」(null) 테이스팅 항목을 빼고(맛 항목 목록 안), 분쇄 측정 사진(dataURL)은 뺀다(파일이 커지고 AI 판단에 안 쓰인다).
 // 항목을 고르지 않았어도 종류·메모를 적었으면 그것만 남긴다.
 export function aiSurvey(s) {
   if (!s) return s;
@@ -33,8 +35,17 @@ export function aiSurvey(s) {
       items[k] = rest;
     }
   }
-  const { liking, items: _, ...rest } = s;
-  return { ...rest, items, ...(liking != null ? { liking } : {}) };
+  // 설문 칸 이름은 형식이라 남기고 값만 null(9/26 사용자 결정 — 형식 때문에 못 빼는 자리는 null): 만족도·잡미·내 표현·노트 인식.
+  // 잡미: 고른 것 → 목록, 안 고름(= 없음, 9/26 사용자 판단) → null(MD 는 「없음」 — facts.js surveyRows). offFlavorNone 은 잠시 있던 「없음」 칩의 값이라 싣지 않는다.
+  const { offFlavorNone: _none, items: _, ...rest } = s;
+  return {
+    ...rest,
+    items,
+    liking: s.liking ?? null,
+    offFlavors: s.offFlavors?.length ? s.offFlavors : null,
+    myNotes: s.myNotes?.length ? s.myNotes : null,
+    notePerception: Object.keys(s.notePerception ?? {}).length ? s.notePerception : null,
+  };
 }
 const noPhoto = (m) => {
   if (!m?.photo) return m;
@@ -70,8 +81,27 @@ function formatDateTime(ms) {
 
 const stripMeta = ({ schemaVersion, updatedAt, ...rest }) => rest;
 
+// 이 기록에서 쓴 원두를 모두 싣는다: 블렌드 템플릿으로 섞었으면 섞은 원두들, 미리 섞은 블렌드면 그 구성 원두까지(9/26)
+function addBeans(beanInfo, beans, brew) {
+  const queue = brewBeanIds(brew);
+  while (queue.length) {
+    const id = queue.shift();
+    if (beanInfo[id]) continue;
+    const bean = beans.find((x) => x.id === id);
+    if (!bean) continue;
+    beanInfo[id] = stripMeta(bean);
+    if (bean.blend?.by === 'me') queue.push(...(bean.blend.parts ?? []).map((p) => p.beanId).filter(Boolean));
+  }
+}
+// 이 기록의 드리퍼 특징(9/26 — 기본 목록·AI·직접 입력이 같은 형식). AI 가 드리퍼를 기억으로 짐작하지 않게 함께 싣는다.
+function addDripper(info, drippers, brew) {
+  const id = brew.conditions?.dripperId;
+  const dp = id ? drippers.find((x) => x.id === id) : null;
+  if (dp && !info[id]) info[id] = stripMeta(dp);
+}
+
 // scope = 'with'(비교 기록 함께) | 'single'(이 기록만)
-export function buildSharePackage({ brews, beans = [], current, now = Date.now(), scope = 'with' }) {
+export function buildSharePackage({ brews, beans = [], drippers = [], current, now = Date.now(), scope = 'with' }) {
   const rel = scope === 'single' ? { previous: null, sameRecipeAndBean: null } : findShareRelations(brews, current);
   const byId = new Map();
   const add = (b, role) => {
@@ -85,12 +115,13 @@ export function buildSharePackage({ brews, beans = [], current, now = Date.now()
 
   const recipes = {};
   const beanInfo = {};
+  const dripperInfo = {};
   const list = [...byId.values()].map(({ roles, brew }) => {
     // 레시피 원본은 아래 recipes 에 한 번만 둔다
     const { snapshot, ...recipe } = brew.recipe;
     if (snapshot && !recipes[recipe.id]) recipes[recipe.id] = snapshot;
-    const bean = brew.bean?.id ? beans.find((x) => x.id === brew.bean.id) : null;
-    if (bean) beanInfo[bean.id] = stripMeta(bean);
+    addBeans(beanInfo, beans, brew);
+    addDripper(dripperInfo, drippers, brew);
     return { roles, ...aiBrew(brew), recipe };
   });
 
@@ -105,20 +136,22 @@ export function buildSharePackage({ brews, beans = [], current, now = Date.now()
     brews: list,
     recipes,
     beans: beanInfo,
+    drippers: dripperInfo,
   };
 }
 
 // 여러 건 골라 공유(9/26 사용자 요청 — 기록 목록을 길게 눌러 고른다): 고른 기록만 시간순으로. 역할은 모두 「고른 기록」,
 // relations.current = 가장 최근 것(AI 가 결과 JSON 의 brewId 로 쓴다), relations.selected = 고른 순서가 아니라 시간순 ID.
-export function buildSelectionPackage({ brews, beans = [], ids, now = Date.now() }) {
+export function buildSelectionPackage({ brews, beans = [], drippers = [], ids, now = Date.now() }) {
   const picked = brews.filter((b) => ids.includes(b.id)).sort((a, b) => a.timer.startedAt - b.timer.startedAt);
   const recipes = {};
   const beanInfo = {};
+  const dripperInfo = {};
   const list = picked.map((brew) => {
     const { snapshot, ...recipe } = brew.recipe;
     if (snapshot && !recipes[recipe.id]) recipes[recipe.id] = snapshot;
-    const bean = brew.bean?.id ? beans.find((x) => x.id === brew.bean.id) : null;
-    if (bean) beanInfo[bean.id] = stripMeta(bean);
+    addBeans(beanInfo, beans, brew);
+    addDripper(dripperInfo, drippers, brew);
     return { roles: ['selected'], ...aiBrew(brew), recipe };
   });
   return {
@@ -132,6 +165,7 @@ export function buildSelectionPackage({ brews, beans = [], ids, now = Date.now()
     brews: list,
     recipes,
     beans: beanInfo,
+    drippers: dripperInfo,
   };
 }
 
@@ -223,12 +257,25 @@ export function toMarkdown(pkg) {
     out.push(`## ${b.roles.map((r) => SHARE_ROLES[r]).join(' · ')}`, '', brewTitle(b), '', `기록 ID: ${b.id}`, '');
     // 글로만 읽히므로 부가 설명을 괄호로 붙인다: 「가수 (추출 후 추가한 물)」
     out.push('### 조건', '', table(['항목', '값'], conditionRows(b).map(([k, v, sub]) => [sub ? `${k} (${sub})` : k, v])), '');
+    // 따른 AI 제안(9/26): 어느 기록의 제안을 따랐는지 · 맞춘 값 · 맞춘 뒤 손으로 바꾼 칸 · 그때 제안 요약
+    const fa = b.followedAdvice;
+    if (fa) {
+      out.push(...[
+        '### 따른 AI 제안',
+        '',
+        `- ${fa.fromStartedAt ? formatDateTime(fa.fromStartedAt) : '이전'} 추출(기록 ID: ${fa.fromBrewId})의 AI 제안대로 맞춰 내렸습니다.`,
+        ...followLines(fa).map((l) => `- ${l}`),
+        fa.dialSkipped ? '- 제안이 달린 기록과 그라인더가 달라 그라인더 표시값은 맞추지 않았습니다.' : null,
+        fa.advice?.summary ? `- 그때 제안: ${fa.advice.summary}` : null,
+        '',
+      ].filter((x) => x !== null));
+    }
     out.push(
       '### 타이머',
       '',
       table(
         ['단계', WORDS.target.label, '레시피 끝', '실제 끝', '판정'],
-        stepRows(b).map((s) => [s.label, `${s.targetCumG}g`, formatSec(s.plannedEndSec), formatSec(s.actualEndSec), s.verdict?.text ?? '—']),
+        stepRows(b).map((s) => [s.label, `${n2(s.targetCumG)}g`, formatSec(s.plannedEndSec), formatSec(s.actualEndSec), s.verdict?.text ?? '—']),
       ),
       '',
       `총 ${formatSec(timerOf(b).totalSec)} (레시피 ${formatSec(b.timer.plannedTotalSec)})`,
@@ -241,7 +288,7 @@ export function toMarkdown(pkg) {
   for (const r of Object.values(pkg.recipes)) {
     out.push(`## 레시피 · ${r.name}`, '');
     if (r.source?.url) out.push(`- 출처: ${r.source.url}`);
-    out.push(`- 기준: 원두 ${r.refDoseG}g · 뜨거운 물 ${Math.round(r.refDoseG * r.waterRatio)}g · ${WORDS.ratio.label} ${formatRatio(r.waterRatio)} · ${r.tempC}℃${r.iceRatio ? ` · 얼음 ${Math.round(r.refDoseG * r.iceRatio)}g` : ''}`);
+    out.push(`- 기준: 원두 ${n2(r.refDoseG)}g · 뜨거운 물 ${Math.round(r.refDoseG * r.waterRatio)}g · ${WORDS.ratio.label} ${formatRatio(r.waterRatio)} · ${r.tempC}℃${r.iceRatio ? ` · 얼음 ${Math.round(r.refDoseG * r.iceRatio)}g` : ''}`);
     if (r.grindNote) out.push(`- 분쇄: ${r.grindNote}`);
     for (const t of r.pourTips ?? []) out.push(`- ${t}`);
     out.push('', table(['단계', '시작', `${WORDS.target.label}(기준 원두량)`], r.steps.map((s, i) => [s.label, formatSec(s.startSec), `${i === r.steps.length - 1 ? Math.round(r.refDoseG * r.waterRatio) : Math.round(r.refDoseG * r.waterRatio * s.cumPct)}g`])), '');
@@ -251,6 +298,9 @@ export function toMarkdown(pkg) {
     out.push(`## 원두 · ${bean.name}`, '');
     const rows = [
       ['로스터', bean.roaster],
+      // 블렌드(9/26): 종류와 구성 — 로스터리 블렌드는 산지별, 내가 섞은 블렌드는 섞은 원두별 무게
+      ['종류', blendKind(bean) !== 'single' ? BLEND_KINDS[blendKind(bean)] : ''],
+      ['구성', blendKind(bean) === 'roaster' ? partsLine(bean.blend.parts, { kind: 'origin' }) : blendKind(bean) === 'me' ? partsLine(bean.blend.parts) : ''],
       ['나라', bean.country],
       ['지역', bean.region],
       ['생산자', bean.producer],
@@ -266,6 +316,24 @@ export function toMarkdown(pkg) {
       ['메모', bean.memo],
     ].filter(([, v]) => v);
     out.push(rows.length ? table(['항목', '값'], rows) : '등록된 정보가 없습니다.', '');
+  }
+
+  // 드리퍼 특징(9/26): 자료 종류(제조사·판매처·AI·직접 입력)를 함께 적어 어디서 온 값인지 보이게
+  for (const dp of Object.values(pkg.drippers ?? {})) {
+    out.push(`## 드리퍼 · ${dp.name}`, '');
+    const rows = [
+      ['제품', [dp.brand, dp.model, dp.size !== '기본' ? dp.size : null].filter(Boolean).join(' ')], // 크기가 하나뿐인 제품의 「기본」은 적지 않는다
+      ['잔 수·용량', dp.cups],
+      ['모양', dp.shape ? DRIPPER_SHAPES[dp.shape] : ''],
+      ['추출 방식', dp.method ? DRIPPER_METHODS[dp.method] : ''],
+      ['구멍', dp.holes],
+      ['안쪽 결', dp.ribs],
+      ['재질', dp.material],
+      ['필터', dp.filter],
+      ['특징', dp.note],
+      ['자료', (dp.sources ?? []).map((x) => `${SOURCE_KINDS[x.kind] ?? x.kind}${x.url ? ` ${x.url}` : ''}`).join(' · ')],
+    ].filter(([, v]) => v);
+    out.push(rows.length ? table(['항목', '값'], rows) : '특징을 적지 않은 드리퍼입니다(이름만).', '');
   }
   return out.join('\n');
 }

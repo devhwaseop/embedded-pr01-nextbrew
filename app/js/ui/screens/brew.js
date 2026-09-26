@@ -10,15 +10,18 @@ import { buildPlan, scaleAdvice, formatRatio, stepHint, HINT_SOURCES, recipeTags
 import { startBrew, readyBrew, view, advance, undoAdvance, cancel, summarize, presence, acknowledge, elapsedSec } from '../../core/timer.js';
 import { conditionRows, stepRows, beanFacts } from '../../core/facts.js';
 import { WORDS, END_STATE_WORDS, endStateKey, josa, DECAF_ASSIST } from '../../core/words.js';
-import {
+import { n2,
   createBrew, newId, round1, formatSec, grindActual, formatDelta, timingVerdict, netServerWeight, linkWeights, dilutionView,
-  beanStock, daysSince, timerOf, DRIPPERS, FILTERS, POUR_METHODS, END_STATES,
+  beanStock, daysSince, timerOf, DRIPPERS, FILTERS, POUR_METHODS, END_STATES, createDripper,
 } from '../../core/schema.js';
 import { findPrevious, compareTimer } from '../../core/diff.js';
 import { logEvent } from '../../core/log.js';
 import { keepAwake, releaseAwake } from '../../platform/wakelock.js';
 import { brewNotFound, adviceView } from './records.js';
-import { advicePatch, lastAdvised } from '../../core/adviceImport.js';
+import { advicePatch, lastAdvised, appliedValues, followRecord } from '../../core/adviceImport.js';
+import { splitDose, ratioPct } from '../../core/blend.js';
+import { DRIPPER_CATALOG, catalogFields, catalogName } from '../../data/drippers.js';
+import { dripperSummary } from './gear.js';
 import { measureImportButton, measureSummary, measureView } from '../measureImport.js';
 import { measurementOf } from '../../core/grindMeasure.js';
 
@@ -30,7 +33,7 @@ export function sentenceLines(text) {
 // 원두만 바꾸고 물은 그대로일 때 비율이 어떻게 바뀌나: 「원두와 물의 비율 1:9.4 → 1:9.1 (… 물 150g 그대로)」
 export function ratioChange(c, doseDeltaG) {
   const to = c.doseG + doseDeltaG;
-  return `${WORDS.ratio.label} ${formatRatio(c.hotWaterG / c.doseG)} → ${formatRatio(c.hotWaterG / to)} (원두 ${c.doseG}g → ${Math.round(to * 10) / 10}g, 물 ${c.hotWaterG}g 그대로)`;
+  return `${WORDS.ratio.label} ${formatRatio(c.hotWaterG / c.doseG)} → ${formatRatio(c.hotWaterG / to)} (원두 ${n2(c.doseG)}g → ${n2(to)}g, 물 ${n2(c.hotWaterG)}g 그대로)`;
 }
 
 // 얼음(사용자 요청 9/25 — 얼음 조각은 크기가 제각각이라 추천 무게에 딱 맞추기 어렵다).
@@ -41,13 +44,13 @@ export function iceShortG(plan, iceG, style) {
   return Math.max(0, plan.iceG - (iceG ?? 0));
 }
 function iceLines(plan, iceG) {
-  const base = `추천 ${plan.iceG}g (원두량 × 레시피 비율)`;
+  const base = `추천 ${n2(plan.iceG)}g (원두량 × 레시피 비율)`;
   const diff = (iceG ?? 0) - plan.iceG;
   if (!diff) return base;
   const planRatio = formatRatio((plan.hotWaterG + plan.iceG) / plan.doseG);
   const line = diff < 0
-    ? `${-diff}g 적습니다. 추출 뒤 찬물 ${-diff}g을 더하면(가수) 계획 비율 ${planRatio}이 됩니다.`
-    : `${diff}g 많습니다. 다 녹으면 ${formatRatio((plan.hotWaterG + iceG) / plan.doseG)}로 계획(${planRatio})보다 조금 연해집니다. 맞추려면 얼음을 조금 덜어 내세요.`;
+    ? `${n2(-diff)}g 적습니다. 추출 뒤 찬물 ${n2(-diff)}g을 더하면(가수) 계획 비율 ${planRatio}이 됩니다.`
+    : `${n2(diff)}g 많습니다. 다 녹으면 ${formatRatio((plan.hotWaterG + iceG) / plan.doseG)}로 계획(${planRatio})보다 조금 연해집니다. 맞추려면 얼음을 조금 덜어 내세요.`;
   return [h('div', null, base), h('div', { class: 'row-line' }, line), h('div', null, '뜨거운 물은 추출을 정해서 그대로 둡니다.')];
 }
 
@@ -99,15 +102,20 @@ function defaultsFor(recipeId) {
   const c = last?.conditions;
   // 다 쓴(소모) 원두는 다시 고르지 않는다(9/25)
   const lastBean = last?.bean?.id ? store.get('beans', last.bean.id) : null;
+  // 블렌드 템플릿으로 섞었으면 그 템플릿(9/26 — 지운 템플릿이면 고르지 않는다)
+  const lastBlend = last?.bean?.blendId ? store.get('blends', last.bean.blendId) : null;
   return {
     recipeId: recipe.id,
     beanId: lastBean && lastBean.status !== 'consumed' ? lastBean.id : null,
-    beanName: last?.bean && !last.bean.id ? last.bean.name : '',
+    blendId: lastBlend?.id ?? null,
+    beanName: last?.bean && !last.bean.id && !last.bean.blendId ? last.bean.name : '',
     grinderId: c?.grind?.grinderId ?? store.list('grinders')[0]?.id ?? null,
     dial: c?.grind?.dial ?? null,
     um: c?.grind?.um ?? null, // 참고 µm(보조, 선택) — 직전 기록과 같은 그라인더·다이얼에서 이어받는다
     umSd: c?.grind?.umSd ?? null, // 참고 µm 의 표준편차(선택) — 사진 측정 도구가 평균과 함께 낸다
-    dripper: c?.dripper ?? DRIPPERS[0],
+    // 드리퍼는 등록 목록에서 ID 로 고른다(9/26 — 기록이 ID 로 가리켜 이름을 고치면 따라간다)
+    dripperId: c?.dripperId ?? store.list('drippers')[0]?.id ?? null,
+    dripper: c?.dripper ?? store.list('drippers')[0]?.name ?? DRIPPERS[0],
     filter: c?.filter ?? FILTERS[0],
     rinsed: c?.rinsed ?? null,
     pourMethod: c?.pourMethod ?? POUR_METHODS[0],
@@ -140,6 +148,9 @@ export function prepScreen() {
     // 다 쓴(소모) 원두는 목록에서 뺀다 — 지금 골라 둔 것이면 남긴다(9/25)
     const beans = store.list('beans').filter((b) => b.status !== 'consumed' || b.id === d.beanId).sort((a, b) => a.name.localeCompare(b.name, 'ko'));
     const bean = d.beanId ? store.get('beans', d.beanId) : null;
+    // 블렌드 템플릿(9/26 사용자 요청 — 추출할 때 가진 원두를 비율대로 섞기): 고르면 원두량을 비율대로 나눈다
+    const blends = store.list('blends').sort((a, b) => a.name.localeCompare(b.name, 'ko'));
+    const blend = d.blendId ? store.get('blends', d.blendId) : null;
     const grinders = store.list('grinders');
     const grinder = grinders.find((g) => g.id === d.grinderId) ?? null;
 
@@ -148,12 +159,15 @@ export function prepScreen() {
       {
         onChange: (e) => {
           const v = e.target.value;
-          set(v === '__free__' ? { beanId: null, beanName: d.beanName || ' ' } : { beanId: v || null, beanName: '' });
+          set(v === '__free__' ? { beanId: null, blendId: null, beanName: d.beanName || ' ' }
+            : v.startsWith('blend:') ? { beanId: null, blendId: v.slice(6), beanName: '' }
+            : { beanId: v || null, blendId: null, beanName: '' });
         },
       },
       h('option', { value: '' }, '선택 안 함'),
-      ...beans.map((b) => h('option', { value: b.id, selected: b.id === d.beanId }, b.roaster ? `${b.name} · ${b.roaster}` : b.name)),
-      h('option', { value: '__free__', selected: !d.beanId && Boolean(d.beanName) }, '등록 없이 이름만 적기'),
+      beans.length ? h('optgroup', { label: '원두' }, ...beans.map((b) => h('option', { value: b.id, selected: b.id === d.beanId }, b.roaster ? `${b.name} · ${b.roaster}` : b.name))) : null,
+      blends.length ? h('optgroup', { label: '블렌드 템플릿(추출할 때 섞기)' }, ...blends.map((t) => h('option', { value: `blend:${t.id}`, selected: t.id === d.blendId }, t.name))) : null,
+      h('option', { value: '__free__', selected: !d.beanId && !d.blendId && Boolean(d.beanName) }, '등록 없이 이름만 적기'),
     );
 
     fill(
@@ -166,7 +180,8 @@ export function prepScreen() {
           onChange: (e) => {
             // 레시피에 딸린 값만 바꾸고 원두·도구 선택은 그대로 둔다
             const nd = defaultsFor(e.target.value);
-            set({ recipeId: nd.recipeId, doseG: nd.doseG, tempC: nd.tempC, style: nd.style, iceG: null, ratio: null });
+            // 레시피가 바뀌면 맞춰 둔 AI 제안(그 레시피의 제안)도 놓는다(9/26)
+            set({ recipeId: nd.recipeId, doseG: nd.doseG, tempC: nd.tempC, style: nd.style, iceG: null, ratio: null, followedAdvice: null });
           },
         }, ...shownRecipes(recipe).map((r) => h('option', { value: r.id, selected: r.id === recipe.id }, r.name))),
         tags(recipeTags(recipe)),
@@ -177,7 +192,7 @@ export function prepScreen() {
           [
             recipe.style === 'iced' ? '아이스' : '핫',
             recipe.designedFor ? `${recipe.designedFor} 기준` : null,
-            `원두 ${recipe.refDoseG}g`,
+            `원두 ${n2(recipe.refDoseG)}g`,
             `비율 ${formatRatio(recipe.waterRatio)}`,
             recipe.tempC != null ? `${recipe.tempC}℃` : null,
             recipe.grindNote || null,
@@ -192,10 +207,12 @@ export function prepScreen() {
       section(
         '원두',
         field('원두', beanSelect, bean ? beanStatusLine(bean, d.doseG) : null),
-        !d.beanId && d.beanName
+        blend ? blendParts(blend) : null,
+        !d.beanId && !d.blendId && d.beanName
           ? field('원두 이름', h('input', { type: 'text', value: d.beanName.trim(), onChange: (e) => set({ beanName: e.target.value }, false) }))
           : null,
         linkButton({ href: '#/bean/new', label: '＋ 원두 등록', returnToPrep: true }),
+        linkButton({ href: '#/blend/new', label: '＋ 블렌드 템플릿 등록', returnToPrep: true }),
         field('원두량', stepper({ value: d.doseG, step: 1, min: 1, max: 100, unit: 'g', onChange: (v) => set({ doseG: v, iceG: null }) }),
           advice ? advice.text : `레시피 기준 원두량입니다. 기준으로 먼저 내린 뒤 바꿔 가며 비교하세요.`),
       ),
@@ -214,7 +231,8 @@ export function prepScreen() {
         field(term('참고 µm', '선택 · 사진 측정값이나 변환 사이트 추정치'), stepper({ value: d.um, step: 10, min: 0, max: 3000, unit: 'µm', onChange: (v) => set({ um: v }, false) })),
         field(term('µm 표준편차', '선택 · 사진 측정 결과에 함께 나옴'), stepper({ value: d.umSd, step: 10, min: 0, max: 3000, unit: 'µm', onChange: (v) => set({ umSd: v }, false) })),
         // 측정 결과 불러오기(사용자 결정 9/26): 언스페셜티 CSV·사진 → 값 확인 → Click 뜻 확인 → 그라인더 표시값·참고 µm·표준편차를 채운다
-        ...measureImportButton({ grinder, via: 'prep', onDone: (m) => set({ dial: m.dial, um: m.meanUm, umSd: m.sdUm, measurement: m }) }),
+        beanMeasureHint(grinder),
+        ...measureImportButton({ grinder, bean: d.beanId ? store.get('beans', d.beanId) : null, via: 'prep', onDone: (m) => set({ dial: m.dial, um: m.meanUm, umSd: m.sdUm, measurement: m }) }),
         d.measurement
           ? h(
               'details',
@@ -229,7 +247,7 @@ export function prepScreen() {
       ),
       section(
         '도구',
-        field('드리퍼', choiceList({ options: usedValues((b) => b.conditions.dripper, DRIPPERS), value: d.dripper, onChange: (v) => set({ dripper: v }, false) })),
+        dripperField(),
         field('필터', choiceList({ options: usedValues((b) => b.conditions.filter, FILTERS), value: d.filter, onChange: (v) => set({ filter: v }, false) })),
         field(termOf(WORDS.rinse), chips({ options: ['함', '안 함'], selected: d.rinsed == null ? null : d.rinsed ? '함' : '안 함', describe: { 함: WORDS.rinse.on, '안 함': WORDS.rinse.off }, onChange: (v) => set({ rinsed: v == null ? null : v === '함' }) })),
         field(WORDS.pourMethod.label, choiceList({ options: usedValues((b) => b.conditions.pourMethod, POUR_METHODS), value: d.pourMethod, onChange: (v) => set({ pourMethod: v }, false) }),
@@ -244,13 +262,13 @@ export function prepScreen() {
         // 뜨거운 물을 바꾸면 비율이 따라간다(비우면 레시피 비율)
         field(term('뜨거운 물', '원두량 × 비율'), stepper({ value: plan.hotWaterG, step: 1, min: 1, max: 2000, unit: 'g', onChange: (v) => set({ ratio: v == null ? null : v / dose }) })),
         // 원두와 물의 비율(사용자 요청 9/24 — 흔히 쓰는 1:15 표기, 독립 항목·직접 조정). 바꾸면 뜨거운 물 = 원두량 × 비율
-        field(WORDS.ratio.label, stepper({ value: Math.round(plan.ratioHot * 10) / 10, step: 0.5, min: 1, max: 30, prefix: '1:', onChange: (v) => set({ ratio: v }) }),
+        field(WORDS.ratio.label, stepper({ value: plan.ratioHot, step: 0.5, min: 1, max: 30, prefix: '1:', onChange: (v) => set({ ratio: v }) }),
           // 안내는 줄을 나눈다: ① 레시피 비율과 같은지(다르면 되돌리기 버튼) ② 아이스면 얼음까지 넣은 비율
           [
             h('div', { class: 'row-line' }, d.ratio != null
               ? [h('span', null, `레시피 비율(${formatRatio(recipe.waterRatio)})과 다름`), h('button', { type: 'button', class: 'inline-btn', onClick: () => set({ ratio: null }) }, '레시피 비율로')]
               : '레시피 비율 그대로'),
-            iceG ? h('div', null, `얼음 ${iceG}g까지 넣으면 ${formatRatio((plan.hotWaterG + iceG) / plan.doseG)}`) : null,
+            iceG ? h('div', null, `얼음 ${n2(iceG)}g까지 넣으면 ${formatRatio((plan.hotWaterG + iceG) / plan.doseG)}`) : null,
           ]),
         d.style === 'hot'
           ? null
@@ -259,14 +277,14 @@ export function prepScreen() {
       section(
         '이번 계획',
         // 「원두와 물의 비율 1:9.4」는 이름과 값이 따로 떨어지지 않게 한 덩어리로 줄을 바꾼다
-        h('div', null, `원두 ${plan.doseG}g · 뜨거운 물 ${plan.hotWaterG}g · `, h('span', { class: 'nowrap' }, `${WORDS.ratio.label} ${formatRatio(plan.ratioHot)}`),
-          iceG ? h('div', { class: 'hint' }, `얼음 ${iceG}g까지 넣으면 ${formatRatio((plan.hotWaterG + iceG) / plan.doseG)}`) : null),
+        h('div', null, `원두 ${n2(plan.doseG)}g · 뜨거운 물 ${n2(plan.hotWaterG)}g · `, h('span', { class: 'nowrap' }, `${WORDS.ratio.label} ${formatRatio(plan.ratioHot)}`),
+          iceG ? h('div', { class: 'hint' }, `얼음 ${n2(iceG)}g까지 넣으면 ${formatRatio((plan.hotWaterG + iceG) / plan.doseG)}`) : null),
         planFigure(plan),
         h(
           'table',
           { class: 'plan' },
           h('tr', null, h('th', null, '단계'), h('th', null, '시작'), h('th', null, WORDS.target.label)),
-          ...plan.steps.map((s) => h('tr', null, h('td', null, s.label), h('td', null, formatSec(s.startSec)), h('td', null, `${s.targetCumG}g`))),
+          ...plan.steps.map((s) => h('tr', null, h('td', null, s.label), h('td', null, formatSec(s.startSec)), h('td', null, `${n2(s.targetCumG)}g`))),
           h('tr', null, h('td', null, '종료 목표'), h('td', null, formatSec(plan.endSec)), h('td', null, '')),
         ),
         h(
@@ -274,8 +292,8 @@ export function prepScreen() {
           { class: 'hint' },
           // 헹군 물이 얼음에 섞이지 않게 린싱을 먼저 적는다
           d.rinsed ? h('li', null, '필터를 헹구고, 헹군 물은 버립니다.') : null,
-          iceG ? h('li', null, `서버에 얼음 ${iceG}g을 넣습니다.`) : null,
-          iceShortG(plan, iceG, d.style) ? h('li', null, `추출 뒤 찬물 ${iceShortG(plan, iceG, d.style)}g을 더합니다(얼음이 추천보다 적은 만큼).`) : null,
+          iceG ? h('li', null, `서버에 얼음 ${n2(iceG)}g을 넣습니다.`) : null,
+          iceShortG(plan, iceG, d.style) ? h('li', null, `추출 뒤 찬물 ${n2(iceShortG(plan, iceG, d.style))}g을 더합니다(얼음이 추천보다 적은 만큼).`) : null,
           ...(recipe.pourTips ?? []).map((n) => h('li', null, n)),
           ...recipe.notes.filter((n) => !n.startsWith('얼음을 서버')).map((n) => h('li', null, n)),
         ),
@@ -289,11 +307,89 @@ export function prepScreen() {
 
   // 원두 상태 한 줄: 로스팅 후·개봉 후 며칠, 남은 원두 추정(9/25). 이번 원두량보다 적게 남았으면 알린다.
   function beanStatusLine(bean, doseG) {
-    const st = beanStock(bean, store.brews());
-    const facts = beanFacts(bean, store.brews());
+    const st = beanStock(bean, store.brews(), store.list('beans'));
+    const facts = beanFacts(bean, store.brews(), Date.now(), store.list('beans'));
     if (!facts.length) return null;
     const short = st.remainingG != null && doseG && st.remainingG < doseG;
-    return h('span', { class: short ? 'warn-text' : '' }, facts.join(' · '), short ? ` — 이번 원두량(${doseG}g)보다 적습니다` : '');
+    return h('span', { class: short ? 'warn-text' : '' }, facts.join(' · '), short ? ` — 이번 원두량(${n2(doseG)}g)보다 적습니다` : '');
+  }
+
+  // 블렌드 템플릿(9/26): 원두량을 비율대로 나눈 무게와 원두마다 남은 양. 다 쓴·지운·모자란 원두는 알린다(고르는 것은 사용자 몫).
+  function blendParts(t) {
+    const parts = splitDose(t.parts.map((p) => ({ ...p, name: store.get('beans', p.beanId)?.name ?? p.name })), d.doseG);
+    if (!parts.length) return h('div', { class: 'notice warn' }, '이 템플릿에 비율을 적은 원두가 없습니다. 템플릿을 고쳐 주세요.', h('a', { href: `#/blend/${t.id}` }, ' 템플릿 고치기'));
+    const all = store.list('beans');
+    const brews = store.brews();
+    return h(
+      'div',
+      { class: 'blend-parts' },
+      ...parts.map((p) => {
+        const b = store.get('beans', p.id);
+        const st = b ? beanStock(b, brews, all) : null;
+        const warn = !b ? '등록에서 지운 원두' : b.status === 'consumed' ? '소모로 바꾼 원두' : st.remainingG != null && st.remainingG < p.g ? `남은 약 ${n2(Math.max(0, st.remainingG))}g — 모자랍니다` : null;
+        return h(
+          'div',
+          { class: 'row-line' },
+          h('span', null, h('b', null, `${n2(p.g)}g`), ` ${p.name}`, h('span', { class: 'hint' }, ` ${ratioPct(parts, p)}%`)),
+          h('span', { class: warn ? 'warn-text' : 'hint' }, warn ?? (st?.remainingG != null ? `남은 약 ${n2(Math.max(0, st.remainingG))}g` : '')),
+        );
+      }),
+      h('a', { class: 'hint', href: `#/blend/${t.id}`, onClick: () => sessionStorage.setItem('nb.returnTo', '#/prep') }, '비율 고치기 ›'),
+    );
+  }
+
+  // 드리퍼(9/26): 등록한 드리퍼(내 드리퍼)와 기본 목록(data/drippers.js — 사용자 결정 «유명 드리퍼 모두 기본 등록»)에서 고른다.
+  // 기본 목록에서 고르면 그 자리에서 내 드리퍼로 등록해 기록이 ID 로 가리키게 한다. 옛 준비 초안(이름만)은 이름으로 찾아 맞춘다.
+  function dripperField() {
+    const list = store.list('drippers').sort((a, b) => a.name.localeCompare(b.name, 'ko'));
+    const cur = (d.dripperId && store.get('drippers', d.dripperId)) || list.find((x) => x.name === d.dripper) || null;
+    const taken = new Set(list.filter((x) => x.catalogKey).map((x) => `${x.catalogKey}|${x.size}`));
+    const fromCatalog = DRIPPER_CATALOG.flatMap((c) => c.sizes.filter(([n]) => !taken.has(`${c.key}|${n}`)).map(([n]) => [`catalog:${c.key}:${n}`, catalogName(c.key, n)]));
+    const onPick = (v) => {
+      if (!v.startsWith('catalog:')) {
+        const dp = store.get('drippers', v);
+        return set({ dripperId: dp?.id ?? null, dripper: dp?.name ?? '' }, false);
+      }
+      const [, key, size] = v.split(':');
+      let name = catalogName(key, size);
+      if (list.some((x) => x.name === name)) name = `${name} (기본 목록)`;
+      const dp = store.put('drippers', createDripper({ name, ...catalogFields(key, size) }));
+      logEvent('dripper.save', { dripperId: dp.id, name: dp.name, renamedFrom: null, catalogKey: key, filled: null, edited: [], via: 'prep' });
+      toast(`「${dp.name}」을 내 드리퍼에 넣었습니다. 재질은 드리퍼 칸에서 고를 수 있어요.`);
+      set({ dripperId: dp.id, dripper: dp.name });
+    };
+    return [
+      field(
+        '드리퍼',
+        h('select', { onChange: (e) => onPick(e.target.value) },
+          cur ? null : h('option', { value: '', selected: true, disabled: true }, '선택'),
+          list.length ? h('optgroup', { label: '내 드리퍼' }, ...list.map((x) => h('option', { value: x.id, selected: x.id === cur?.id }, x.name))) : null,
+          fromCatalog.length ? h('optgroup', { label: '기본 목록(고르면 내 드리퍼에 등록)' }, ...fromCatalog.map(([v, label]) => h('option', { value: v }, label))) : null),
+        cur ? dripperSummary(cur) || null : null,
+      ),
+      linkButton({ href: '#/drippers', label: '드리퍼 등록·특징 고치기', returnToPrep: true }),
+    ];
+  }
+
+  // 이 원두·그라인더로 잰 분쇄 측정(9/26 — 원두별로 모은 것 중 가장 최근): 있으면 알리고 한 번에 맞추는 단추
+  function beanMeasureHint(grinder) {
+    if (!d.beanId || !grinder) return null;
+    const m = store.list('measurements').filter((x) => x.beanId === d.beanId && x.grinderId === grinder.id).sort((a, b) => (b.importedAt ?? '').localeCompare(a.importedAt ?? ''))[0];
+    if (!m) return null;
+    const { photo, schemaVersion, updatedAt, id, ...rest } = m;
+    return h(
+      'div',
+      { class: 'notice' },
+      h('div', null, `이 원두 측정(${fmtDateTime(Date.parse(m.importedAt))}): 표시값 ${m.dial ?? '—'} → 평균 ${n2(m.meanUm ?? '—')}µm${m.sdUm != null ? ` · 표준편차 ${n2(m.sdUm)}µm` : ''}`),
+      h('button', {
+        type: 'button',
+        class: 'inline-btn',
+        onClick: () => {
+          logEvent('prep.measureApply', { measurementId: m.id, beanId: d.beanId, dial: { from: d.dial, to: m.dial } });
+          set({ dial: m.dial ?? d.dial, um: m.meanUm, umSd: m.sdUm, measurement: { ...rest, measurementId: id } });
+        },
+      }, '이 측정대로 맞추기'),
+    );
   }
 
   // 디카페인 보조(9/26 사용자 요청): 고른 원두가 디카페인이면 분쇄·원두량을 바꾸는 안내와 한 번 누르면 맞추는 단추.
@@ -345,7 +441,7 @@ export function prepScreen() {
   // 지난번 제안(사용자 결정 9/24 — 커피 컴퍼스): 같은 레시피(원두를 골랐으면 같은 원두)의 가장 최근 «설문한» 기록에서 낸 제안.
   // [제안대로 맞추기]는 그 기록의 값에서 출발한다: 그라인더 표시값 = 그때 영점 반영값 + 제안 클릭 − 지금 영점, 원두 = 그때 + 제안 g, 물 = 그때 그대로.
   function adviceCard(recipe, grinder) {
-    const prev = lastSurveyed(store.brews(), { recipeId: recipe.id, beanId: d.beanId });
+    const prev = lastSurveyed(store.brews(), { recipeId: recipe.id, beanId: d.blendId ?? d.beanId });
     if (!prev) return null;
     const roast = prev.bean?.id ? store.get('beans', prev.bean.id)?.roast || null : null;
     const pg = prev.conditions.grind;
@@ -380,7 +476,7 @@ export function prepScreen() {
       adv.grindUm && !canDial
         ? h('div', { class: 'hint' }, sameGrinder ? '클릭당 µm 를 알면 클릭 수로 알려 드립니다(설정 → 그라인더, 또는 참고 µm 를 두 눈금 이상에서 기록).' : '지난번과 그라인더가 달라 분쇄는 µm 로만 보입니다.')
         : null,
-      upc ? h('div', { class: 'source' }, `클릭당 약 ${upc.value}µm (${upc.source === 'manual' ? '설정에 적은 값' : `기록 ${upc.n}건으로 추정`})`) : null,
+      upc ? h('div', { class: 'source' }, `클릭당 약 ${n2(upc.value)}µm (${upc.source === 'manual' ? '설정에 적은 값' : `기록 ${upc.n}건으로 추정`})`) : null,
       actionable ? h('button', { type: 'button', onClick: apply }, '제안대로 맞추기') : null,
     );
   }
@@ -388,7 +484,7 @@ export function prepScreen() {
   // AI 제안(9/25 — 기록 화면 「AI 제안」에 넣은 것): 같은 레시피(원두를 골랐으면 같은 원두)의 가장 최근 AI 제안.
   // [AI 제안대로 맞추기]는 그 기록의 값에서 출발한다. 다이얼은 같은 그라인더일 때만 바꾼다(core/adviceImport.js advicePatch).
   function aiAdviceCard(recipe, grinder) {
-    const from = lastAdvised(store.brews(), { recipeId: recipe.id, beanId: d.beanId });
+    const from = lastAdvised(store.brews(), { recipeId: recipe.id, beanId: d.blendId ?? d.beanId });
     if (!from) return null;
     const a = from.aiAdvice;
     const { patch, dialSkipped } = advicePatch(a, from, { grinderId: grinder?.id ?? null });
@@ -398,15 +494,23 @@ export function prepScreen() {
         dial: { from: d.dial, to: patch.dial ?? d.dial }, doseG: { from: d.doseG, to: patch.doseG ?? d.doseG },
         waterG: a.next.hotWaterG ?? null, tempC: { from: d.tempC, to: patch.tempC ?? d.tempC },
       });
-      set(patch);
-      toast('AI 제안대로 맞췄습니다.');
+      // 따른 제안을 기억해 두었다가 추출을 시작할 때 기록에 남긴다(9/26 사용자 결정 — 제안 원문 복사 · 맞춘 뒤 바꾼 칸은 차이로)
+      const followedAdvice = { fromBrewId: from.id, fromStartedAt: from.timer.startedAt, advice: structuredClone(a), applied: appliedValues(patch, d.doseG), dialSkipped };
+      set({ ...patch, followedAdvice });
+      toast('AI 제안대로 맞췄습니다. 추출을 시작하면 이 제안을 따랐다고 기록에 남습니다.');
     };
+    const following = d.followedAdvice?.fromBrewId === from.id;
     return section(
       'AI 제안',
       h('div', { class: 'hint' }, `${fmtDateTime(from.timer.startedAt)} 추출에 넣은 AI 답 기준`),
       ...adviceView(a, from),
       dialSkipped ? h('div', { class: 'hint' }, '제안이 달린 기록과 그라인더가 달라 그라인더 표시값은 바꾸지 않습니다.') : null,
-      Object.keys(patch).length ? h('button', { type: 'button', onClick: apply }, 'AI 제안대로 맞추기') : null,
+      Object.keys(patch).length ? h('button', { type: 'button', onClick: apply }, following ? 'AI 제안대로 다시 맞추기' : 'AI 제안대로 맞추기') : null,
+      following
+        ? h('div', { class: 'row-line' },
+            h('span', { class: 'hint' }, '맞춤 — 추출을 시작하면 이 제안을 따랐다고 기록에 남습니다(맞춘 뒤 바꾼 칸은 차이로 적습니다).'),
+            h('button', { type: 'button', class: 'inline-btn quiet', onClick: () => set({ followedAdvice: null }) }, '남기지 않기'))
+        : null,
     );
   }
 
@@ -445,7 +549,12 @@ export function prepScreen() {
 
   function start(recipe, plan, iceG, grinder) {
     if (!d.doseG) return toast('원두량을 넣어 주세요.');
-    const bean = d.beanId
+    const tpl = d.blendId ? store.get('blends', d.blendId) : null;
+    const parts = tpl ? splitDose(tpl.parts.map((p) => ({ ...p, name: store.get('beans', p.beanId)?.name ?? p.name })), d.doseG) : [];
+    if (tpl && !parts.length) return toast('블렌드 템플릿에 비율을 적은 원두가 없습니다.');
+    const bean = tpl
+      ? { id: null, name: tpl.name, blendId: tpl.id, parts }
+      : d.beanId
       ? { id: d.beanId, name: store.get('beans', d.beanId)?.name ?? '' }
       : d.beanName.trim()
         ? { id: null, name: d.beanName.trim() }
@@ -458,9 +567,11 @@ export function prepScreen() {
         ? { grinderId: grinder?.id ?? null, grinderName: grinder?.name ?? '', dial: d.dial, zeroOffset: grinder?.zeroOffset ?? 0, um: d.um ?? null, umSd: d.umSd ?? null, measurement: d.measurement ?? null }
         : null,
       dripper: d.dripper,
+      dripperId: d.dripperId ?? null,
       filter: d.filter,
       rinsed: d.rinsed,
       pourMethod: d.pourMethod,
+      followedAdvice: d.followedAdvice ? followRecord(d.followedAdvice, { grindDial: d.dial, doseG: d.doseG, hotWaterG: plan.hotWaterG, tempC: d.tempC }) : null,
     };
     // 얼음이 추천보다 적으면 그만큼을 추출 뒤 가수로 채우는 것이 계획이다(9/25) — 결과 화면 가수의 처음 값이 된다
     const short = iceShortG(plan, iceG, d.style);
@@ -492,6 +603,8 @@ function saveFinished(active, state, now, navigate = true) {
   logEvent('brew.end', { totalSec: timer.totalSec, plannedTotalSec: timer.plannedTotalSec, deltaSec: round1(timer.totalSec - timer.plannedTotalSec), verdict: timingVerdict(timer.totalSec - timer.plannedTotalSec).kind, via: state.endVia ?? null }, { brewId, now });
   store.put('brews', brew);
   logEvent('brew.saved', { where: store.mode }, { brewId });
+  const fa = brew.followedAdvice;
+  if (fa) logEvent('advice.follow', { fromBrewId: fa.fromBrewId, applied: Object.keys(fa.applied), adjusted: fa.adjusted }, { brewId });
   clearActive();
   clearDraft();
   if (navigate) location.hash = `#/brew/${brewId}/result`;
@@ -684,9 +797,9 @@ export function timerScreen() {
       pourPill.classList.add('hidden');
       arc.setAttribute('stroke-dashoffset', '0');
       stepName.textContent = v.step.label;
-      targetIn.textContent = `${v.step.targetCumG}g까지 붓기`;
+      targetIn.textContent = `${n2(v.step.targetCumG)}g까지 붓기`;
       hint.textContent = sentenceLines(v.step.hint);
-      next.textContent = v.next ? `다음: ${v.next.label} · ${v.next.targetCumG}g까지 (${formatSec(v.next.startSec)})` : '';
+      next.textContent = v.next ? `다음: ${v.next.label} · ${n2(v.next.targetCumG)}g까지 (${formatSec(v.next.startSec)})` : '';
       nextBtn.setLabel('시작');
       nextBtn.disabled = false;
       cancelBtn.disabled = false;
@@ -719,15 +832,15 @@ export function timerScreen() {
     pourPill.classList.toggle('hidden', !pouring);
     if (pouring) {
       pourLeft.textContent = `${Math.ceil(v.pourLeftSec)}초`;
-      pourG.textContent = `${v.expectedNowG}g`;
+      pourG.textContent = `${n2(v.expectedNowG)}g`;
     }
     targetIn.classList.toggle('done', ended || v.pourDone);
-    targetIn.textContent = ended || v.pourDone ? `${v.step.targetCumG}g 붓기 끝` : `${v.step.targetCumG}g까지`;
+    targetIn.textContent = ended || v.pourDone ? `${n2(v.step.targetCumG)}g 붓기 끝` : `${n2(v.step.targetCumG)}g까지`;
     // 문장마다 줄을 바꾼다(사용자 요청 9/24 — 「~단계입니다.」 다음에서 끊기게). CSS .step-hint 가 white-space: pre-line
     hint.textContent = sentenceLines(v.step.hint);
     // 마지막 단계: 떼는 때 = 물줄기가 방울로 바뀔 때(사용자 질문 9/25). 레시피 시각은 기다릴 시각이 아니라 비교할 목표다.
     next.textContent = v.next
-      ? `다음: ${v.next.label} · ${v.next.targetCumG}g까지 (${formatSec(v.next.startSec)})`
+      ? `다음: ${v.next.label} · ${n2(v.next.targetCumG)}g까지 (${formatSec(v.next.startSec)})`
       : `물줄기가 방울로 바뀌면 [종료]를 누르고 드리퍼를 떼세요 · 목표 약 ${formatSec(plan.endSec)}`;
     nextBtn.setLabel(ended ? '저장 중…' : v.isLast ? '종료' : '다음 푸어 ›');
     nextBtn.disabled = ended;
@@ -967,7 +1080,7 @@ export function resultScreen(id) {
           draw();
         },
       },
-      ...servers.map((x) => h('option', { value: x.id, selected: x.id === sel }, `${x.name} · ${x.tareG ?? '?'}g`)),
+      ...servers.map((x) => h('option', { value: x.id, selected: x.id === sel }, `${x.name} · ${n2(x.tareG ?? '?')}g`)),
       h('option', { value: '__custom__', selected: sel === '__custom__' }, '등록 없이 무게만 적기'),
     );
     const net = netServerWeight({ ...r, server: srv });
@@ -978,7 +1091,7 @@ export function resultScreen(id) {
         ? field('서버 자체 무게', stepper({ value: srv?.tareG, step: 1, min: 0, max: 3000, unit: 'g', onChange: (v) => { save('server', { ...(r.server ?? { id: null, name: '' }), tareG: v }); draw(); } }))
         : null,
       field(termOf(WORDS.serverTotal), stepper({ value: r.serverWeightG, step: 1, min: 0, max: 3000, unit: 'g', onChange: (v) => setWeight('serverWeightG', v) }),
-        net != null ? h('span', null, h('b', null, `${WORDS.netWeight.label} ${net}g`), ` · ${WORDS.netWeight.sub}`) : null),
+        net != null ? h('span', null, h('b', null, `${WORDS.netWeight.label} ${n2(net)}g`), ` · ${WORDS.netWeight.sub}`) : null),
     ];
   }
 
@@ -1024,7 +1137,7 @@ export function resultScreen(id) {
     else if (dv.moreG > 0) lines.push(h('div', null, `계획 비율 ${formatRatio(dv.ratioTarget)}까지 가수 ${Math.round(dv.moreG)}g 더`));
     else lines.push(h('div', null, `계획 비율(${formatRatio(dv.ratioTarget)})보다 ${Math.round(-dv.moreG)}g만큼 연합니다.`));
     lines.push(h('div', null, '계획 비율 = 계획한 뜨거운 물 + 추천 얼음 + 레시피 가수'));
-    return field(`${WORDS.ratio.label}(${what})`, h('div', { class: 'field-value' }, formatRatio(dv.ratioNow), h('span', { class: 'term-sub' }, `물 모두 ${dv.waterNowG}g`)), lines);
+    return field(`${WORDS.ratio.label}(${what})`, h('div', { class: 'field-value' }, formatRatio(dv.ratioNow), h('span', { class: 'term-sub' }, `물 모두 ${n2(dv.waterNowG)}g`)), lines);
   }
 
   // 누른 시각 고치기(사용자 요청 9/25, 정정 9/26 — 못 누른 경우만이 아니라 모든 단계를 사후에): 타이머 기록은 그대로 두고
@@ -1039,7 +1152,7 @@ export function resultScreen(id) {
       '분쇄 측정',
       m ? h('div', { class: 'hint' }, measureSummary(m)) : h('div', { class: 'hint' }, '언스페셜티에서 분쇄를 잰 결과(CSV 또는 결과 화면 사진)를 이 기록에 붙일 수 있습니다.'),
       m ? measureView(m) : null,
-      ...measureImportButton({ grinder: grinder ?? (g ? { id: null, name: g.grinderName, zeroOffset: g.zeroOffset } : null), via: 'result', onDone: (mm) => { save('grindMeasurement', mm); draw(); } }),
+      ...measureImportButton({ grinder: grinder ?? (g ? { id: null, name: g.grinderName, zeroOffset: g.zeroOffset } : null), bean: b.bean?.id ? store.get('beans', b.bean.id) : null, via: 'result', onDone: (mm) => { save('grindMeasurement', mm); draw(); } }),
       linkButton({ href: 'https://community.unspecialty.com/compass/grinder', label: '사진으로 분쇄 재기 · 언스페셜티', external: true }),
     );
   }
@@ -1103,7 +1216,7 @@ export function resultScreen(id) {
       ),
       section(
         '계획대로 했나요?',
-        field(`물 (계획 ${c.hotWaterG}g)`, chips({ options: ['계획대로', '바뀜'], selected: r.actualWaterG == null ? '계획대로' : '바뀜', onChange: (v) => { save('actualWaterG', v === '바뀜' ? c.hotWaterG : null); draw(); } })),
+        field(`물 (계획 ${n2(c.hotWaterG)}g)`, chips({ options: ['계획대로', '바뀜'], selected: r.actualWaterG == null ? '계획대로' : '바뀜', onChange: (v) => { save('actualWaterG', v === '바뀜' ? c.hotWaterG : null); draw(); } })),
         r.actualWaterG != null ? stepper({ value: r.actualWaterG, step: 1, min: 0, max: 2000, unit: 'g', onChange: (v) => save('actualWaterG', v) }) : null,
         field(`드립 방법 (계획 ${c.pourMethod})`, chips({ options: ['계획대로', '바뀜'], selected: r.actualPourMethod == null ? '계획대로' : '바뀜', onChange: (v) => { save('actualPourMethod', v === '바뀜' ? c.pourMethod : null); draw(); } })),
         r.actualPourMethod != null ? choiceList({ options: POUR_METHODS, value: r.actualPourMethod, onChange: (v) => save('actualPourMethod', v) }) : null,

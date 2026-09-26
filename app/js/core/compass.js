@@ -11,6 +11,8 @@
 // 설문 값: 강도 level 1~5 = INTENSITY_WORDS(없음·약함·보통·강함·매우 강함), 선택 안 함 = null.
 // 부호: extraction 음수 = 과소추출(더 추출해야 함), 양수 = 과다추출. strength 양수 = 진함, 음수 = 연함.
 
+import { n2 } from './schema.js';
+
 export const COMPASS_STEP = { grindUm: 30, doseG: 0.5 };
 const MAX_EXTRACTION = 3;
 const MAX_STRENGTH = 2;
@@ -86,11 +88,11 @@ export function adviseNext(compass, { umPerClick = null } = {}) {
     const dir = grindUm < 0 ? '가늘게' : '굵게';
     lines.push(
       clicks
-        ? `분쇄 ${Math.abs(clicks)}클릭 ${dir} (그라인더 표시값 ${clicks > 0 ? '+' : '−'}${Math.abs(clicks)} · 약 ${Math.abs(grindUm)}µm)`
-        : `분쇄 조금 ${dir} (약 ${Math.abs(grindUm)}µm — 클릭당 µm 를 알면 클릭 수로 보여 드립니다)`,
+        ? `분쇄 ${Math.abs(clicks)}클릭 ${dir} (그라인더 표시값 ${clicks > 0 ? '+' : '−'}${Math.abs(clicks)} · 약 ${n2(Math.abs(grindUm))}µm)`
+        : `분쇄 조금 ${dir} (약 ${n2(Math.abs(grindUm))}µm — 클릭당 µm 를 알면 클릭 수로 보여 드립니다)`,
     );
   }
-  if (doseDeltaG) lines.push(`원두를 ${Math.abs(doseDeltaG)}g ${doseDeltaG > 0 ? '늘리기' : '줄이기'} (물은 그대로)`);
+  if (doseDeltaG) lines.push(`원두를 ${n2(Math.abs(doseDeltaG))}g ${doseDeltaG > 0 ? '늘리기' : '줄이기'} (물은 그대로)`);
   if (compass.mixed) lines.push('시큼함과 쓴맛·마름이 함께 있어 방향이 엇갈립니다. 분쇄는 그대로 두고 한 번 더 내려 보세요.');
   const keep = !grindUm && !doseDeltaG && !compass.mixed;
   if (keep) {
@@ -136,6 +138,6 @@ export function umPerClickFor(grinder, brews) {
 // 준비 화면용: 같은 레시피(원두를 골랐으면 같은 원두까지)의 가장 최근 «설문한» 기록
 export function lastSurveyed(brews, { recipeId, beanId = null }) {
   return brews
-    .filter((b) => b.survey && b.recipe.id === recipeId && (!beanId || b.bean?.id === beanId))
+    .filter((b) => b.survey && b.recipe.id === recipeId && (!beanId || (b.bean?.id ?? b.bean?.blendId) === beanId))
     .sort((a, b) => b.timer.startedAt - a.timer.startedAt)[0] ?? null;
 }

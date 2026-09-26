@@ -25,14 +25,14 @@ function stamp() {
 async function doExport() {
   const include = store.settings().includeLogsInExport;
   const logs = include ? await store.logs() : null;
-  const data = buildExport({ brews: store.brews(), beans: store.list('beans'), grinders: store.list('grinders'), servers: store.list('servers'), recipes: store.list('recipes'), logs });
+  const data = buildExport({ brews: store.brews(), beans: store.list('beans'), grinders: store.list('grinders'), servers: store.list('servers'), recipes: store.list('recipes'), drippers: store.list('drippers'), measurements: store.list('measurements'), blends: store.list('blends'), logs });
   const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
   const a = h('a', { href: url, download: `nextbrew-${stamp()}.json` });
   document.body.append(a);
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
-  logEvent('export', { brews: data.brews.length, beans: data.beans.length, grinders: data.grinders.length, servers: data.servers.length, recipes: data.recipes.length, logs: logs?.length ?? 0 });
+  logEvent('export', { brews: data.brews.length, beans: data.beans.length, grinders: data.grinders.length, servers: data.servers.length, recipes: data.recipes.length, drippers: data.drippers.length, measurements: data.measurements.length, blends: data.blends.length, logs: logs?.length ?? 0 });
 }
 
 async function doImport(file) {
@@ -46,6 +46,7 @@ async function doImport(file) {
       added += r.added.length;
       skipped += r.skipped;
     }
+    // 옛 파일이면 불러온 뒤 새로 고침할 때 지금 형식으로 올라간다(store.use → core/migrate.js)
     // 로그는 id 가 없어 (시각, 사건)이 같으면 같은 줄로 본다
     const have = new Set((await store.logs()).map((l) => `${l.t}|${l.ev}`));
     const newLogs = inc.logs.filter((l) => !have.has(`${l.t}|${l.ev}`));

@@ -5,8 +5,11 @@
 // 진행 중인 추출(타이머 상태)은 기기에만 둔다 — 새로고침돼도 이어서 쓰기 위한 것이라 동기화 대상이 아니다.
 
 import { setLogSink, logEvent } from './log.js';
+import { upgradeData, syncRefs, syncBlendParts } from './migrate.js';
 
-export const COLLECTIONS = ['brews', 'beans', 'grinders', 'servers', 'recipes']; // recipes: 가져온 레시피(9/24)
+export const COLLECTIONS = ['brews', 'beans', 'grinders', 'servers', 'recipes', 'drippers', 'measurements', 'blends']; // recipes: 가져온 레시피(9/24), drippers·measurements·blends(블렌드 템플릿): 9/26
+// 기록이 ID 로 가리키는 등록 항목 — 이것을 저장하면 가리키는 기록의 이름 등을 따라 바꾼다(core/migrate.js 포인터)
+const REGISTRY = ['beans', 'grinders', 'servers', 'drippers', 'blends'];
 
 export function createLocalAdapter(storage = globalThis.localStorage, prefix = 'nb') {
   const key = (name) => `${prefix}.${name}`;
@@ -118,7 +121,26 @@ function createStore() {
       settings = all.settings ?? {};
       Object.assign(this, extra);
       setLogSink((entry) => adapter.appendLog(entry));
+      this.upgrade('load');
       listeners.forEach((fn) => fn());
+    },
+    // 옛 형식 올리기 + 포인터 맞추기(core/migrate.js). 바뀐 문서만 다시 쓰고, 바뀐 게 있을 때만 로그 한 줄(무엇을 몇 건).
+    // via = load(불러올 때) | import(JSON 가져오기 뒤)
+    upgrade(via) {
+      const data = Object.fromEntries(COLLECTIONS.map((c) => [c, [...maps[c].values()]]));
+      const { changed, steps, settingsPatch } = upgradeData(data, settings);
+      for (const [c, docs] of Object.entries(changed)) {
+        for (const d of docs) {
+          maps[c].set(d.id, d);
+          adapter.put(c, d);
+        }
+      }
+      if (Object.keys(settingsPatch).length) {
+        settings = { ...settings, ...settingsPatch };
+        adapter.putSettings(settings);
+      }
+      if (Object.keys(steps).length) logEvent('data.upgrade', { via, steps, docs: Object.fromEntries(Object.entries(changed).map(([c, d]) => [c, d.length])) });
+      return steps;
     },
     onChange(fn) {
       listeners.add(fn);
@@ -135,7 +157,36 @@ function createStore() {
       if (touch) doc.updatedAt = new Date().toISOString();
       maps[col].set(doc.id, doc);
       adapter.put(col, doc);
+      if (REGISTRY.includes(col)) this.followRegistry(col, doc);
       return doc;
+    },
+    // 등록 항목을 고치면 그것을 가리키는 기록도 따라 바꾼다(포인터 — 9/26 사용자 요청). 바뀐 기록 수를 로그로 남긴다.
+    followRegistry(col, doc) {
+      const reg = Object.fromEntries(REGISTRY.map((c) => [c, c === col ? new Map([[doc.id, doc]]) : new Map()]));
+      const hits = [];
+      for (const b of maps.brews.values()) {
+        const copy = structuredClone(b);
+        if (!syncRefs(copy, reg).length) continue;
+        maps.brews.set(copy.id, copy);
+        adapter.put('brews', copy);
+        hits.push(copy.id);
+      }
+      // 원두 이름을 고치면 그 원두를 쓰는 블렌드 템플릿·미리 섞은 블렌드의 구성 이름도 따라간다(9/26)
+      const parts = [];
+      if (col === 'beans') {
+        const one = new Map([[doc.id, doc]]);
+        for (const c of ['blends', 'beans']) {
+          for (const x of maps[c].values()) {
+            if (x.id === doc.id) continue;
+            const copy = structuredClone(x);
+            if (!syncBlendParts(copy, one)) continue;
+            maps[c].set(copy.id, copy);
+            adapter.put(c, copy);
+            parts.push(copy.id);
+          }
+        }
+      }
+      if (hits.length || parts.length) logEvent('ref.follow', { col, id: doc.id, name: doc.name, brews: hits.length, blendParts: parts.length });
     },
     remove(col, id) {
       maps[col].delete(id);
@@ -169,7 +220,7 @@ export async function copyAll(from, to) {
   const newLogs = logs.filter((l) => !have.has(`${l.t}|${l.ev}`));
   for (const c of COLLECTIONS) for (const d of data[c] ?? []) to.put(c, d);
   for (const l of newLogs) to.appendLog(l);
-  return { brews: data.brews.length, beans: data.beans.length, grinders: data.grinders.length, servers: data.servers?.length ?? 0, recipes: data.recipes?.length ?? 0, logs: newLogs.length, logsSkipped: logs.length - newLogs.length };
+  return { brews: data.brews.length, beans: data.beans.length, grinders: data.grinders.length, servers: data.servers?.length ?? 0, recipes: data.recipes?.length ?? 0, drippers: data.drippers?.length ?? 0, measurements: data.measurements?.length ?? 0, logs: newLogs.length, logsSkipped: logs.length - newLogs.length };
 }
 
 // 계정 모드에서 «이 기기에만 있는» 기록 수 — 이 기기 저장소에는 있는데 지금 저장소(계정)에 같은 id 가 없는 것.

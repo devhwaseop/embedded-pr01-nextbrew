@@ -324,7 +324,7 @@ test('이 기기 → 계정 옮기기: 로그는 두 번 옮겨도 한 벌, 계�
   cloud.appendLog({ t: 1, ev: 'app.start' });
   // 전역 store 를 쓰지 않는다(로그 수신처가 붙어 다른 테스트에 번진다) — 계정에 있는지는 함수로 넘긴다
   const inCloud = async () => { const all = await cloud.loadAll(); return (c, id) => (all[c] ?? []).some((d) => d.id === id); };
-  assert.deepEqual(localOnlyCounts(localMem, 'nb', await inCloud()), { total: 1, brews: 1, beans: 0, grinders: 0, servers: 0, recipes: 0 });
+  assert.deepEqual(localOnlyCounts(localMem, 'nb', await inCloud()), { total: 1, brews: 1, beans: 0, grinders: 0, servers: 0, recipes: 0, drippers: 0, measurements: 0, blends: 0 });
   const n1 = await copyAll(local, cloud);
   assert.equal(n1.logs, 1);
   assert.equal(n1.logsSkipped, 1);
@@ -871,7 +871,19 @@ test('AI 공유: 「선택 안 함」 항목은 MD·JSON 에서 빠지고, 설�
   assert.ok(!JSON.stringify(surveyRows(s)).includes('선택 안 함'));
   const a = aiSurvey(s);
   assert.deepEqual(Object.keys(a.items), ['bitterness', 'body']);
-  assert.ok(!('level' in a.items.body) && !('liking' in a));
+  assert.ok(!('level' in a.items.body));
+  // 설문 칸 이름은 형식이라 남기고 값만 null(9/26): 만족도·잡미(안 고름)·내 표현·노트 인식
+  assert.deepEqual([a.liking, a.offFlavors, a.myNotes, a.notePerception], [null, null, null, null]);
+  assert.ok(!('offFlavorNone' in a));
+  // MD: 내 표현을 안 골랐으면 줄이 없고, 잡미는 안 고르면 「없음」(9/26 사용자 결정)
+  assert.ok(!('내 표현' in rows));
+  assert.equal(rows['잡미'], '없음');
+  // 잠시 있던 「없음」 칩 값이 남아 있어도 MD 「없음」·JSON null, 키도 싣지 않는다
+  const none = { ...s, offFlavorNone: true };
+  assert.equal(Object.fromEntries(surveyRows(none))['잡미'], '없음');
+  assert.equal(aiSurvey(none).offFlavors, null);
+  assert.ok(!('offFlavorNone' in aiSurvey(none)));
+  assert.deepEqual(aiSurvey({ ...s, offFlavors: ['Woody (나무 같은)'] }).offFlavors, ['Woody (나무 같은)']);
   // 설정 내보내기는 원래 기록 그대로(null 포함)
   const b = { ...makeBrew({ id: 'x1', at: 1_000, presses: [40, 70, 130] }), survey: s };
   const exp = buildExport({ brews: [b], beans: [], grinders: [] });
@@ -909,4 +921,249 @@ test('배전도 숫자(0.5~10) → 5단계 단어, 옛 원두는 단어 그대�
   assert.equal(roastLabel({ roastLevel: null, roast: '강배전' }), '강배전');
   assert.equal(profileLine({ scale: 5, items: [{ label: '산미', value: 3.5 }, { label: '단맛', value: 4 }] }), '산미 3.5/5 · 단맛 4/5');
   assert.equal(profileLine(null), '');
+});
+
+// ── 9/26 세 번째 묶음: 옛 형식 올리기 · 포인터 · 로스터리 설명 가져오기 · 소수 표기 ──
+import { upgradeData, syncRefs, ROAST_WORD_LEVEL } from '../app/js/core/migrate.js';
+import { beanPrompt, readBeanText, validateBeanImport, beanPatch, applyBeanPatch, BEAN_EXAMPLE } from '../app/js/core/beanImport.js';
+import { n2 } from '../app/js/core/schema.js';
+import { formatRatio } from '../app/js/core/recipe.js';
+
+test('옛 형식 올리기: 뜻은 그대로 지금 형식으로, 두 번 돌려도 더 바뀌지 않는다', () => {
+  const oldBean = { id: 'b1', name: '옛 원두', roast: '중배전', notes: [] }; // nameAuto·roastLevel 없는 옛 원두
+  const b = makeBrew({ id: 'o1', at: 1_000, presses: [40, 70, 130], bean: { id: 'b1', name: '옛 이름' } });
+  b.result.endState = '다 빠짐';
+  b.conditions.dripper = 'Hario V60 01 투명';
+  const r1 = upgradeData({ brews: [b], beans: [oldBean], grinders: [], servers: [], drippers: [] }, {});
+  const bean = r1.data.beans[0];
+  assert.equal(bean.nameAuto, false);
+  assert.equal(bean.roastLevel, ROAST_WORD_LEVEL['중배전']);
+  assert.equal(roastWordOf(bean.roastLevel), '중배전'); // 단어(띠)는 그대로 — 뜻이 같다
+  assert.equal(bean.roastLevelFrom, 'word');
+  assert.equal(roastLabel(bean), '중배전 약 5.5/10');
+  const brew = r1.data.brews[0];
+  assert.equal(brew.result.endState, 'drained');
+  assert.equal(brew.bean.name, '옛 원두'); // 포인터: 등록 원두 이름을 따른다
+  const names = r1.data.drippers.map((d) => d.name);
+  assert.ok(names.includes('Hario V60 01 투명') && names.includes('Hario V60 02')); // 기록의 드리퍼 + 앱 기본
+  assert.equal(brew.conditions.dripperId, r1.data.drippers.find((d) => d.name === 'Hario V60 01 투명').id);
+  assert.deepEqual(r1.settingsPatch, { drippersSeeded: true });
+  assert.ok(oldBean.nameAuto === undefined && b.result.endState === '다 빠짐'); // 불러온 원본은 건드리지 않는다
+  const r2 = upgradeData(r1.data, { drippersSeeded: true });
+  assert.deepEqual(r2.steps, {});
+  assert.deepEqual(r2.changed, {});
+});
+
+test('포인터: 이름·서버 무게는 등록 항목을 따르고, 그라인더 영점은 그때 값 그대로(사용자 결정 9/26)', () => {
+  const b = makeBrew({ id: 'p2', at: 1_000, presses: [40, 70, 130] });
+  b.conditions.grind = { grinderId: 'g1', grinderName: 'K6', dial: 110, zeroOffset: -3 };
+  b.conditions.dripperId = 'd1';
+  b.conditions.dripper = 'v60';
+  b.result.server = { id: 's1', name: '서버', tareG: 250 };
+  const reg = {
+    beans: new Map(),
+    grinders: new Map([['g1', { id: 'g1', name: 'KINGrinder K6', zeroOffset: 0 }]]),
+    servers: new Map([['s1', { id: 's1', name: '하리오 서버', tareG: 252 }]]),
+    drippers: new Map([['d1', { id: 'd1', name: 'a60' }]]),
+  };
+  assert.deepEqual(syncRefs(b, reg).sort(), ['dripper', 'grinder', 'server']);
+  assert.equal(b.conditions.grind.grinderName, 'KINGrinder K6');
+  assert.equal(b.conditions.grind.zeroOffset, -3);
+  assert.equal(b.conditions.dripper, 'a60');
+  assert.deepEqual(b.result.server, { id: 's1', name: '하리오 서버', tareG: 252 });
+  assert.deepEqual(syncRefs(b, reg), []);
+});
+
+test('로스터리 설명 가져오기: 예시는 오류 0, 척도·배전·범위 검사, 이미 적은 칸은 처음에 체크하지 않을 칸으로', () => {
+  assert.ok(beanPrompt().includes('"format": "nextbrew-bean"'));
+  const { raw } = readBeanText('```json\n' + JSON.stringify(BEAN_EXAMPLE) + '\n```');
+  const ok = validateBeanImport(raw);
+  assert.deepEqual(ok.errors, []);
+  assert.equal(ok.value.profile.scale, 5);
+  const bad = validateBeanImport({ ...BEAN_EXAMPLE, roast: '미디엄', roastLevel: 11, profile: { scale: 4, items: [] } });
+  assert.ok(bad.errors.some((e) => e.startsWith('roastLevel')) && bad.errors.some((e) => e.startsWith('profile.scale')));
+  assert.ok(bad.warnings.some((w) => w.startsWith('roast:')));
+  const bean = createBean({ country: '콜롬비아', notes: ['초콜릿'] });
+  const rows = Object.fromEntries(beanPatch(bean, ok.value).map((r) => [r.key, r]));
+  assert.equal(rows.country.conflict, true); // 콜롬비아 → 에티오피아: 지금 값이 있어 처음엔 체크하지 않는다
+  assert.equal(rows.region.conflict, false);
+  applyBeanPatch(bean, ok.value, ['region', 'roast', 'notes', 'roasterProfile']);
+  assert.equal(bean.country, '콜롬비아');
+  assert.equal(bean.region, '예가체프');
+  assert.deepEqual([bean.roast, bean.roastLevel, bean.roastLevelFrom], ['중약배전', 3.5, 'word']);
+  assert.deepEqual(bean.notes, ['초콜릿', '자스민', '레몬', '홍차']); // 노트는 더한다
+  assert.equal(profileLine(bean.roasterProfile), '산미 4/5 · 단맛 3.5/5 · 바디 2/5');
+});
+
+test('소수 표기: 셋째 자리에서 반올림해 둘째 자리까지(9/26 사용자 요청)', () => {
+  assert.equal(n2(16.1 + 0.2), 16.3);
+  assert.equal(n2(38 - 16.1 - 16.2), 5.7);
+  assert.equal(n2(15.625), 15.63);
+  assert.equal(n2(250), 250);
+  assert.equal(n2(null), null);
+  assert.equal(formatRatio(250 / 16), '1:15.63');
+  assert.equal(formatRatio(15), '1:15');
+});
+
+// ── 9/26 네 번째 묶음: 블렌드 · 따른 AI 제안 ──
+import { splitDose, partsLine, beanRef, brewBeanIds, brewBeanLabel, blendAutoName, templateAutoName, createBlend } from '../app/js/core/blend.js';
+import { syncBlendParts } from '../app/js/core/migrate.js';
+import { beanKey } from '../app/js/core/diff.js';
+import { appliedValues, followRecord, followLines } from '../app/js/core/adviceImport.js';
+
+test('블렌드 템플릿: 원두량을 비율대로 나누고, 반올림 차이는 마지막 원두에 얹어 합이 원두량과 같다', () => {
+  const parts = [{ beanId: 'a', name: 'A', ratio: 2 }, { beanId: 'b', name: 'B', ratio: 1 }];
+  assert.deepEqual(splitDose(parts, 18).map((p) => [p.id, p.g]), [['a', 12], ['b', 6]]);
+  const three = splitDose([{ beanId: 'a', name: 'A', ratio: 1 }, { beanId: 'b', name: 'B', ratio: 1 }, { beanId: 'c', name: 'C', ratio: 1 }], 10);
+  assert.deepEqual(three.map((p) => p.g), [3.33, 3.33, 3.34]);
+  assert.deepEqual(splitDose([{ beanId: null, ratio: 1 }], 10), []); // 원두를 안 고른 줄은 뺀다
+  assert.equal(partsLine(splitDose(parts, 18)), 'A 12g + B 6g');
+  assert.equal(partsLine(parts, { kind: 'ratio' }), 'A 66.67% + B 33.33%');
+  assert.equal(templateAutoName(createBlend({ parts })), 'A + B');
+  assert.equal(blendAutoName({ blend: { by: 'roaster', parts: [{ country: '에티오피아', pct: 60 }, { country: '브라질', pct: 40 }] } }), '에티오피아·브라질 블렌드');
+  assert.equal(partsLine([{ country: '에티오피아', region: '예가체프', pct: 60 }, { country: '브라질', pct: null }], { kind: 'origin' }), '에티오피아 예가체프 60% · 브라질');
+});
+
+test('블렌드 남은 양: 템플릿으로 섞은 기록은 나눈 무게만, 미리 섞은 블렌드에 넣은 무게는 «섞음»으로 뺀다', () => {
+  const a = createBean({ id: 'a', name: 'A', purchased: { amount: 200, unit: 'g' } });
+  const mix = createBean({ id: 'm', name: 'A + B', blend: { by: 'me', parts: [{ beanId: 'a', name: 'A', g: 50 }, { beanId: 'b', name: 'B', g: 30 }] } });
+  const single = makeBrew({ id: 'x1', at: 1_000, presses: [40, 70, 130], bean: { id: 'a', name: 'A' } }); // 원두량 16g
+  const tpl = makeBrew({ id: 'x2', at: 2_000, presses: [40, 70, 130], bean: { id: null, name: 'A + B', blendId: 'blend_1', parts: [{ id: 'a', name: 'A', ratio: 2, g: 12 }, { id: 'b', name: 'B', ratio: 1, g: 4 }] } });
+  const fromMix = makeBrew({ id: 'x3', at: 3_000, presses: [40, 70, 130], bean: { id: 'm', name: 'A + B' } });
+  const st = beanStock(a, [single, tpl, fromMix], [a, mix]);
+  assert.deepEqual([st.totalG, st.usedG, st.brews, st.mixedG, st.remainingG], [200, 28, 2, 50, 122]);
+  const ms = beanStock(mix, [single, tpl, fromMix], [a, mix]);
+  assert.deepEqual([ms.totalG, ms.usedG, ms.remainingG], [80, 16, 64]); // 섞은 블렌드의 양 = 섞은 무게 합
+  assert.equal(tpl.bean.blendId, 'blend_1'); // createBrew 가 템플릿 표시를 남긴다
+  assert.deepEqual(brewBeanIds(tpl), ['a', 'b']);
+  assert.equal(beanRef(tpl), 'blend_1');
+  assert.equal(beanKey(tpl), 'blend_1');
+  assert.equal(brewBeanLabel(tpl), 'A + B (A 12g + B 4g)');
+  assert.equal(Object.fromEntries(conditionRows(tpl))['원두'], 'A + B (A 12g + B 4g)');
+});
+
+test('블렌드 포인터: 템플릿 이름·원두 이름을 고치면 기록과 구성이 따라가고, 무게·비율은 그때 값 그대로', () => {
+  const tpl = makeBrew({ id: 'y1', at: 1_000, presses: [40, 70, 130], bean: { id: null, name: '옛 템플릿', blendId: 'blend_1', parts: [{ id: 'a', name: '옛 A', ratio: 2, g: 12 }, { id: 'b', name: 'B', ratio: 1, g: 4 }] } });
+  const reg = { beans: new Map([['a', { id: 'a', name: '새 A' }]]), blends: new Map([['blend_1', { id: 'blend_1', name: '아침 블렌드' }]]) };
+  assert.deepEqual(syncRefs(tpl, reg).sort(), ['blend', 'blendPart']);
+  assert.equal(tpl.bean.name, '아침 블렌드');
+  assert.deepEqual(tpl.bean.parts.map((p) => [p.name, p.g, p.ratio]), [['새 A', 12, 2], ['B', 4, 1]]);
+  const t = createBlend({ id: 'blend_1', name: '아침 블렌드', parts: [{ beanId: 'a', name: '옛 A', ratio: 2 }] });
+  const mix = createBean({ id: 'm', blend: { by: 'me', parts: [{ beanId: 'a', name: '옛 A', g: 50 }] } });
+  assert.equal(syncBlendParts(t, reg.beans), true);
+  assert.equal(syncBlendParts(mix, reg.beans), true);
+  assert.equal(t.parts[0].name, '새 A');
+  assert.equal(mix.blend.parts[0].name, '새 A');
+  assert.equal(syncBlendParts(t, reg.beans), false);
+  // 불러올 때 한 번에: 두 번 돌려도 더 바뀌지 않는다
+  const oldT = createBlend({ id: 'blend_2', name: 'T', parts: [{ beanId: 'a', name: '옛 A', ratio: 1 }] });
+  const r1 = upgradeData({ brews: [], beans: [{ id: 'a', name: '새 A', nameAuto: false }], blends: [oldT], drippers: [] }, { drippersSeeded: true });
+  assert.equal(r1.steps['ref.templatePart'], 1);
+  assert.deepEqual(upgradeData(r1.data, { drippersSeeded: true }).steps, {});
+});
+
+test('로스터리 블렌드 가져오기: 산지별 구성과 비율(「60%」도 읽음), 합이 100 이 아니면 경고, 고르면 원두에 로스터리 블렌드로', () => {
+  const raw = { ...BEAN_EXAMPLE, country: null, region: null, producer: null, variety: null, process: null, blend: { parts: [{ country: '에티오피아', process: '내추럴', pct: '60%' }, { country: '브라질', pct: 30 }] } };
+  const r = validateBeanImport(raw);
+  assert.deepEqual(r.errors, []);
+  assert.deepEqual(r.value.blend.parts.map((p) => [p.country, p.pct]), [['에티오피아', 60], ['브라질', 30]]);
+  assert.ok(r.warnings.some((w) => w.includes('비율 합이 90%')));
+  const bean = createBean();
+  const row = beanPatch(bean, r.value).find((x) => x.key === 'blend');
+  assert.equal(row.to, '에티오피아 내추럴 60% · 브라질 30%');
+  applyBeanPatch(bean, r.value, ['blend']);
+  assert.equal(bean.blend.by, 'roaster');
+  assert.equal(validateBeanImport(BEAN_EXAMPLE).value.blend, null); // 싱글 오리진 예시는 그대로
+});
+
+test('따른 AI 제안: 맞춘 값과 맞춘 뒤 손으로 바꾼 칸을 남기고, 제안 원문은 복사해 둔다(사용자 결정 9/26)', () => {
+  const applied = appliedValues({ dial: 108, doseG: 18, ratio: 16, tempC: 92 }, 16);
+  assert.deepEqual(applied, { grindDial: 108, doseG: 18, hotWaterG: 288, tempC: 92 });
+  assert.deepEqual(appliedValues({ ratio: 287.5 / 16 }, 16), { hotWaterG: 288 }); // 계획처럼 g 로 반올림(손대지 않은 물이 «바꿈»이 되지 않게)
+  const advice = { summary: '조금 곱게', next: { grindDial: 108 }, changes: [], good: [], issues: [], questions: [] };
+  const fa = followRecord({ fromBrewId: 'p1', fromStartedAt: 1_000, advice, applied, dialSkipped: false }, { grindDial: 106, doseG: 18, hotWaterG: 288, tempC: 92 });
+  assert.deepEqual(fa.adjusted, [{ key: 'grindDial', applied: 108, actual: 106 }]);
+  assert.equal(fa.advice, advice);
+  assert.deepEqual(followLines(fa), ['그라인더 표시값 108 → 맞춘 뒤 106(으)로 바꿈', '원두량 18 그대로', '뜨거운 물 288 그대로', '물 온도 92 그대로']);
+  const b = makeBrew({ id: 'f1', at: 5_000, presses: [40, 70, 130] });
+  b.followedAdvice = fa;
+  const md = toMarkdown(buildSharePackage({ brews: [b], current: b, scope: 'single' }));
+  assert.match(md, /### 따른 AI 제안/);
+  assert.match(md, /기록 ID: p1\)의 AI 제안대로/);
+  assert.match(md, /그라인더 표시값 108 → 맞춘 뒤 106\(으\)로 바꿈/);
+  assert.equal(JSON.parse(toJSON(buildSharePackage({ brews: [b], current: b, scope: 'single' }))).brews[0].followedAdvice.fromBrewId, 'p1');
+});
+
+test('AI 공유: 블렌드로 내린 기록은 섞은 원두와 미리 섞은 블렌드의 구성 원두까지 원두 정보에 싣는다', () => {
+  const a = createBean({ id: 'a', name: 'A', country: '에티오피아' });
+  const c = createBean({ id: 'c', name: 'C', country: '케냐' });
+  const mix = createBean({ id: 'm', name: 'A + C', blend: { by: 'me', parts: [{ beanId: 'a', name: 'A', g: 50 }, { beanId: 'c', name: 'C', g: 50 }] } });
+  const b = makeBrew({ id: 'z1', at: 1_000, presses: [40, 70, 130], bean: { id: 'm', name: 'A + C' } });
+  const pkg = buildSharePackage({ brews: [b], beans: [a, c, mix], current: b, scope: 'single' });
+  assert.deepEqual(Object.keys(pkg.beans).sort(), ['a', 'c', 'm']);
+  const md = toMarkdown(pkg);
+  assert.match(md, /\| 종류 \| 내가 섞은 블렌드 \|/);
+  assert.match(md, /\| 구성 \| A 50g \+ C 50g \|/);
+});
+
+// ── 9/26 드리퍼 기본 목록 · AI 특징 · 직접 입력(같은 형식) ──
+import { DRIPPER_CATALOG, DRIPPER_SHAPES, DRIPPER_METHODS, catalogFields, catalogName, DRIPPER_SEEDS } from '../app/js/data/drippers.js';
+import { DRIPPER_EXAMPLE, dripperPrompt, validateDripperImport, dripperPatch, applyDripperPatch } from '../app/js/core/dripperImport.js';
+import { createDripper } from '../app/js/core/schema.js';
+
+test('드리퍼 기본 목록: 키가 겹치지 않고, 모든 항목에 크기·재질·출처 주소가 있으며 모양·방식은 정해진 값만', () => {
+  assert.equal(new Set(DRIPPER_CATALOG.map((c) => c.key)).size, DRIPPER_CATALOG.length);
+  for (const c of DRIPPER_CATALOG) {
+    assert.ok(c.sizes.length && c.materials.length, c.key);
+    assert.ok(c.shape === null || DRIPPER_SHAPES[c.shape], c.key);
+    assert.ok(DRIPPER_METHODS[c.method], c.key);
+    assert.ok(c.sources.length && c.sources.every((s) => ['maker', 'seller'].includes(s.kind) && /^https:\/\//.test(s.url) && s.checkedAt), c.key);
+  }
+  const f = catalogFields('hario-v60', '01');
+  assert.deepEqual([f.size, f.cups, f.shape, f.method, f.material], ['01', '1~2잔', 'cone', 'pour', null]); // 재질이 여러 가지면 고를 때까지 비움
+  assert.equal(catalogFields('chemex-classic', '6컵').material, '붕규산 유리(나무 손잡이·가죽 끈)'); // 한 가지면 채움
+  assert.equal(catalogName('clever', '기본'), 'CLEVER Dripper');
+  assert.equal(catalogName('kalita-wave', '185'), 'Kalita Wave 185');
+});
+
+test('옛 앱 기본 드리퍼(이름만)는 기본 목록과 잇고 이름은 그대로, 두 번 돌려도 더 바뀌지 않는다', () => {
+  const old = createDripper({ id: 'd1', name: 'Hario V60 02' }); // 9/26 전 seed — 특징 없음
+  const own = createDripper({ id: 'd2', name: '내 드리퍼', shape: 'flat' });
+  const r1 = upgradeData({ brews: [], beans: [], drippers: [old, own] }, { drippersSeeded: true });
+  const d1 = r1.data.drippers.find((d) => d.id === 'd1');
+  assert.deepEqual([d1.name, d1.catalogKey, d1.size, d1.shape, d1.holes], ['Hario V60 02', 'hario-v60', '02', 'cone', '큰 구멍 1개']);
+  assert.equal(r1.steps['dripper.catalog'], 1);
+  assert.equal(r1.data.drippers.find((d) => d.id === 'd2').catalogKey, null); // 사용자가 만든 것은 건드리지 않는다
+  assert.deepEqual(upgradeData(r1.data, { drippersSeeded: true }).steps, {});
+  const fresh = upgradeData({ brews: [], beans: [], drippers: [] }, {});
+  assert.deepEqual(fresh.data.drippers.map((d) => [d.name, d.catalogKey]), DRIPPER_SEEDS.map((x) => [x.name, x.key])); // 새로 만들 때부터 특징이 있다
+});
+
+test('드리퍼 특징 AI 가져오기: 예시는 오류 0, 한국어 모양 이름도 읽고, 출처가 없으면 알리며, 고른 칸만 채우고 출처를 «AI 답»으로 남긴다', () => {
+  assert.ok(dripperPrompt('Timemore B75').includes('Timemore B75') && dripperPrompt().includes('"format": "nextbrew-dripper"'));
+  const ok = validateDripperImport(DRIPPER_EXAMPLE);
+  assert.deepEqual(ok.errors, []);
+  const loose = validateDripperImport({ format: 'nextbrew-dripper', shape: '평바닥', method: 'drip', sources: [{ label: '블로그', url: 'ftp://x' }] });
+  assert.equal(loose.value.shape, 'flat');
+  assert.equal(loose.value.method, null);
+  assert.ok(loose.warnings.some((w) => w.startsWith('sources[0].url')) && loose.warnings.some((w) => w.startsWith('sources: 출처가 없습니다')));
+  const dp = createDripper({ name: 'X', material: '유리' });
+  const rows = Object.fromEntries(dripperPatch(dp, ok.value).map((r) => [r.key, r]));
+  assert.equal(rows.material.conflict, true);
+  assert.equal(rows.shape.to, '원뿔');
+  applyDripperPatch(dp, ok.value, ['shape', 'holes'], new Date('2026-09-26T00:00:00Z'));
+  assert.deepEqual([dp.shape, dp.holes, dp.material], ['cone', '큰 구멍 1개', '유리']);
+  assert.deepEqual(dp.sources.map((s) => [s.kind, s.checkedAt]), [['ai', '2026-09-26']]);
+});
+
+test('AI 공유: 기록의 드리퍼 특징을 자료 종류와 함께 싣는다', () => {
+  const dp = createDripper({ id: 'dp1', name: 'Kalita Wave 185', ...catalogFields('kalita-wave', '185') });
+  const b = makeBrew({ id: 'w1', at: 1_000, presses: [40, 70, 130] });
+  b.conditions.dripperId = 'dp1';
+  const pkg = buildSharePackage({ brews: [b], drippers: [dp], current: b, scope: 'single' });
+  assert.equal(pkg.drippers.dp1.shape, 'flat');
+  const md = toMarkdown(pkg);
+  assert.match(md, /## 드리퍼 · Kalita Wave 185/);
+  assert.match(md, /\| 구멍 \| 구멍 3개 \|/);
+  assert.match(md, /\| 자료 \| 제조사 자료 https:\/\/kalitaofficial\.com/);
 });

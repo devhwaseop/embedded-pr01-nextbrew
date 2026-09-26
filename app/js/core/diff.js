@@ -4,13 +4,15 @@
 // - 시간은 ±2초 이내면 사람 손의 편차로 보고 «다름»으로 치지 않는다.
 // - 직접 적은 글(메모)은 비교하지 않고 각 기록 화면에서 모두 보여 준다(보고서 결정).
 
-import { grindActual, formatGrind, formatSec, formatDelta, netServerWeight, dilutionView, timerOf, TIME_TOLERANCE_SEC, SURVEY_ITEMS, INTENSITY_WORDS, LIKING_WORDS } from './schema.js';
+import { n2, grindActual, formatGrind, formatSec, formatDelta, netServerWeight, dilutionView, timerOf, TIME_TOLERANCE_SEC, SURVEY_ITEMS, INTENSITY_WORDS, LIKING_WORDS } from './schema.js';
 import { WORDS, endStateLabel } from './words.js';
+import { brewBeanLabel } from './blend.js';
 
 export const IGNORE_SEC = TIME_TOLERANCE_SEC;
 
+// 같은 원두 찾기 열쇠: 등록 원두 ID → 블렌드 템플릿 ID(9/26 — 템플릿으로 섞은 기록끼리 같은 원두로 본다) → 이름
 export function beanKey(b) {
-  return b.bean ? b.bean.id ?? `name:${b.bean.name}` : null;
+  return b.bean ? b.bean.id ?? b.bean.blendId ?? `name:${b.bean.name}` : null;
 }
 
 export function findPrevious(brews, current) {
@@ -52,12 +54,12 @@ export function compareTimer(cur, prev) {
 const show = (v, unit = '') => (v == null || v === '' ? '—' : `${v}${unit}`);
 const water = (b) => b.result?.actualWaterG ?? b.conditions.hotWaterG;
 const pour = (b) => b.result?.actualPourMethod ?? b.conditions.pourMethod;
-const ratioOf = (x) => `1:${Math.round(x * 10) / 10}`;
+const ratioOf = (x) => `1:${n2(x)}`; // 셋째 자리에서 반올림해 둘째 자리까지(9/26)
 const ratio = (b) => ratioOf(water(b) / b.conditions.doseG);
 const grind = (b) => {
   const g = b.conditions.grind;
   if (!g || g.dial == null) return '—';
-  return `${g.grinderName ? `${g.grinderName} ` : ''}${formatGrind(g.dial, g.zeroOffset)} (영점 반영값 ${grindActual(g.dial, g.zeroOffset)}${g.um != null ? ` · 참고 약 ${g.um}µm${g.umSd != null ? ` ±${g.umSd}` : ''}` : ''})`;
+  return `${g.grinderName ? `${g.grinderName} ` : ''}${formatGrind(g.dial, g.zeroOffset)} (영점 반영값 ${grindActual(g.dial, g.zeroOffset)}${g.um != null ? ` · 참고 약 ${n2(g.um)}µm${g.umSd != null ? ` ±${g.umSd}` : ''}` : ''})`;
 };
 const level = (words, v) => (v == null ? '선택 안 함' : words[v - 1]);
 
@@ -70,7 +72,7 @@ export function sideBySide(cur, prev) {
   const rows = [];
   const C = '조건';
   rows.push(row('기본', '레시피', cur.recipe.name, prev.recipe.name));
-  rows.push(row('기본', '원두', show(cur.bean?.name), show(prev.bean?.name)));
+  rows.push(row('기본', '원두', show(brewBeanLabel(cur)), show(brewBeanLabel(prev)))); // 블렌드 템플릿이면 원두별 무게까지 비교(9/26)
   rows.push(row(C, '원두량', show(cur.conditions.doseG, 'g'), show(prev.conditions.doseG, 'g')));
   rows.push(row(C, '뜨거운 물', show(water(cur), 'g'), show(water(prev), 'g')));
   rows.push(row(C, '얼음', cur.conditions.style === 'hot' ? '핫' : show(cur.conditions.iceG, 'g'), prev.conditions.style === 'hot' ? '핫' : show(prev.conditions.iceG, 'g')));

@@ -1,6 +1,6 @@
 // NextBrew 진입점 — 화면 전환(해시 라우팅), 하단 메뉴, 시작 처리
 
-import { h, fill } from './ui/dom.js';
+import { h, fill, autoGrow, growAll } from './ui/dom.js';
 import { icon } from './ui/icons.js';
 import { store, createLocalAdapter, loadActive, copyAll } from './core/store.js';
 import { logEvent } from './core/log.js';
@@ -10,10 +10,10 @@ import { prepScreen, timerScreen, resultScreen } from './ui/screens/brew.js';
 import { surveyScreen } from './ui/screens/survey.js';
 import { homeScreen, historyScreen, detailScreen } from './ui/screens/records.js';
 import { shareScreen } from './ui/screens/share.js';
-import { beansScreen, beanFormScreen } from './ui/screens/beans.js';
+import { beansScreen, beanFormScreen, blendFormScreen } from './ui/screens/beans.js';
 import { settingsScreen, applyDisplaySettings } from './ui/screens/settings.js';
 import { recipesScreen } from './ui/screens/recipes.js';
-import { grindersScreen, serversScreen } from './ui/screens/gear.js';
+import { grindersScreen, serversScreen, drippersScreen, dripperFormScreen } from './ui/screens/gear.js';
 import { slideTabs, shiftSegment, enterFallback, reducedMotion, SLIDE_MS, EASING } from './ui/tabSlide.js';
 import { enableTabSwipe } from './ui/tabSwipe.js';
 
@@ -29,17 +29,20 @@ const ROUTES = [
   [/^#\/history$/, historyScreen],
   [/^#\/beans$/, beansScreen],
   [/^#\/bean\/([^/]+)$/, beanFormScreen],
+  [/^#\/blend\/([^/]+)$/, blendFormScreen], // 9/26 블렌드 템플릿
   [/^#\/settings$/, settingsScreen],
   [/^#\/recipes$/, recipesScreen],
   [/^#\/grinders$/, grindersScreen],
   [/^#\/servers$/, serversScreen],
+  [/^#\/drippers$/, drippersScreen],
+  [/^#\/dripper\/([^/]+)$/, dripperFormScreen], // 9/26 드리퍼 등록·수정(기본 목록·AI·직접 입력)
 ];
 
 // 아래 탭: 아이콘만 보이고(사용자 요청 9/24) 이름은 화면 읽기 프로그램용으로 숨겨 둔다
 const NAV = [
   ['#/', '홈', 'home'],
   ['#/history', '기록', 'history'],
-  ['#/beans', '원두', 'bean'],
+  ['#/beans', '원두', 'brew'], // 9/26 원두·레시피·그라인더·드리퍼·서버를 묶는 탭이라 «내리는 모습» 아이콘(사용자 선택)
   ['#/settings', '설정', 'settings'],
 ];
 
@@ -48,8 +51,8 @@ let cleanup = null;
 let lastHash = null; // 화면 전환의 종류·방향을 정하려고(ui/tabSlide.js · 아래 transitionKind)
 let swipedTo = null; // 끌어 넘긴 탭 번호 — 이미 손가락으로 넘겼으니 슬라이드를 다시 하지 않는다
 
-// 원두 탭 안 [원두 | 레시피 | 그라인더 | 서버] 칸 — 옮길 때 옆으로 넘긴다
-const SEGMENTS = ['#/beans', '#/recipes', '#/grinders', '#/servers'];
+// 원두 탭 안 [원두 | 레시피 | 그라인더 | 드리퍼 | 서버] 칸(9/26 다섯 칸) — 옮길 때 짧게 밀며 겹쳐 바꾼다
+const SEGMENTS = ['#/beans', '#/recipes', '#/grinders', '#/drippers', '#/servers'];
 // 아래 탭 번호(탭 첫 화면만 — 슬라이드·끌어 넘기기). 원두 탭 안의 네 칸은 모두 원두 탭이다(9/25·9/26)
 function tabIndexOf(hash) {
   return SEGMENTS.includes(hash) ? 2 : NAV.findIndex(([href]) => href === hash);
@@ -57,7 +60,7 @@ function tabIndexOf(hash) {
 // 탭 막대에서 켤 탭: 탭 첫 화면 + 원두 등록·수정 화면(원두 탭)
 function navIndexOf(hash) {
   const i = tabIndexOf(hash);
-  return i >= 0 ? i : hash.startsWith('#/bean/') ? 2 : -1;
+  return i >= 0 ? i : hash.startsWith('#/bean/') || hash.startsWith('#/blend/') || hash.startsWith('#/dripper/') ? 2 : -1;
 }
 
 // 화면 전환 두 가지(9/25 사용자 결정 — 시각 요소). View Transitions API(크롬 111·Safari 18·Firefox 144 이상)로, 없으면 그냥 바뀐다.
@@ -215,6 +218,14 @@ function swap(hash, from) {
   }
   location.hash = '#/';
 }
+
+// 여러 줄 입력칸은 내용만큼 늘어난다(9/26 사용자 요청): 칠 때 · 새 칸이 붙을 때(화면·팝업) · details 를 열 때 · 폭이 바뀔 때
+document.addEventListener('input', (e) => autoGrow(e.target));
+document.addEventListener('toggle', (e) => growAll(e.target), true);
+window.addEventListener('resize', () => growAll());
+new MutationObserver((list) => {
+  for (const m of list) for (const n of m.addedNodes) if (n.nodeType === 1) (n.tagName === 'TEXTAREA' ? autoGrow(n) : growAll(n));
+}).observe(document.body, { childList: true, subtree: true });
 
 // 처리되지 않은 오류는 로그에 남긴다(어디서 났는지와 함께)
 window.addEventListener('error', (e) => logEvent('error', { message: e.message, where: `${e.filename?.split('/').pop()}:${e.lineno}` }));

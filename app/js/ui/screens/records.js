@@ -4,7 +4,7 @@ import { h, fill, section, fmtDateTime, term, toast, googleButton, modal, copyTe
 import { WORDS } from '../../core/words.js';
 import { store, loadActive, localOnlyCounts, copyAll, createLocalAdapter } from '../../core/store.js';
 import { logEvent } from '../../core/log.js';
-import { formatSec, formatDelta, beanStock, timerOf, SURVEY_ITEMS, INTENSITY_WORDS, LIKING_WORDS } from '../../core/schema.js';
+import { n2, formatSec, formatDelta, beanStock, timerOf, SURVEY_ITEMS, INTENSITY_WORDS, LIKING_WORDS } from '../../core/schema.js';
 import { lowBeanNotice } from './beans.js';
 import { sideBySide } from '../../core/diff.js';
 import { firebaseEnabled, signIn } from '../../platform/firebase.js';
@@ -13,18 +13,24 @@ import { brewFigure, compareFigure, compassFigure } from '../charts.js';
 import { measurementOf } from '../../core/grindMeasure.js';
 import { measureSummary, measureView } from '../measureImport.js';
 import { readCompass, adviseNext, umPerClickFor } from '../../core/compass.js';
-import { readAdviceText, validateAdvice, adviceResultPrompt, currentValues, ADVICE_ITEMS, CONFIDENCE_WORDS } from '../../core/adviceImport.js';
+import { readAdviceText, validateAdvice, adviceResultPrompt, currentValues, followLines, ADVICE_ITEMS, CONFIDENCE_WORDS } from '../../core/adviceImport.js';
 
+// 기록 한 줄(9/26 사용자 요청): 왼쪽 = 「레시피 · 원두」와 날짜(사이를 조금 띄움), 오른쪽 = 걸린 시간과 설문 상태를 담은 작은 상자.
+// 오른쪽 상자는 두 줄 높이의 가운데에 두고 줄바꿈하지 않는다 — 제목이 길어도 「설문 완료」가 두 줄로 깨지지 않게 제목 쪽이 줄어든다.
+// 상태 글자는 「설문 완료·설문 대기」(9/26 사용자 요청 — 「노트」만 쓰면 맛의 노트인지 종이 노트인지 애매하다). 화면 이름은 「테이스팅 노트」 그대로.
 function brewRow(b) {
   return h(
     'a',
-    { class: 'list-row', href: `#/brew/${b.id}` },
-    h('div', null, h('div', null, `${b.recipe.name} · ${b.bean?.name ?? '원두 미입력'}`), h('div', { class: 'hint' }, fmtDateTime(b.timer.startedAt))),
-    h('div', { class: 'right' }, formatSec(timerOf(b).totalSec), h('div', { class: b.survey ? 'muted' : 'badge' }, b.survey ? '노트 완료' : '노트 대기')),
+    { class: 'list-row brew-row', href: `#/brew/${b.id}` },
+    h('div', { class: 'brew-row-main' }, h('div', null, `${b.recipe.name} · ${b.bean?.name ?? '원두 미입력'}`), h('div', { class: 'hint' }, fmtDateTime(b.timer.startedAt))),
+    h('div', { class: 'row-meta' }, h('span', null, formatSec(timerOf(b).totalSec)), h('span', { class: b.survey ? 'muted' : 'badge' }, b.survey ? '설문 완료' : '설문 대기')),
   );
 }
 
-const LOCAL_WORDS = { brews: '추출', beans: '원두', grinders: '그라인더', servers: '서버', recipes: '레시피' };
+// 계정 배너 한 칸(9/26 사용자 요청 — 다른 안내 칸처럼 두 줄): 「계정에 저장 중」(굵게) / 이메일
+const accountLine = (title, email) => h('div', { class: 'account-line' }, h('b', null, title), email ? h('div', null, email) : null);
+
+const LOCAL_WORDS = { brews: '추출', beans: '원두', grinders: '그라인더', servers: '서버', recipes: '레시피', drippers: '드리퍼', measurements: '분쇄 측정', blends: '블렌드 템플릿' };
 
 async function moveLocalToAccount(btn) {
   btn.disabled = true;
@@ -38,7 +44,7 @@ async function moveLocalToAccount(btn) {
 // 9/25 사용자 요청: 「로그인」 글자 링크로 설정 화면에 보내지 말고, 그 자리에서 바로 구글 로그인을 띄운다.
 export function storageBanner({ loginLink = true } = {}) {
   // 새로 고침 직후 계정 확인 중이면 「로그인하지 않아…」로 잘못 보이지 않게
-  if (store.mode !== 'cloud' && store.pendingAccount) return h('div', { class: 'banner pending' }, `계정 확인 중… · ${store.pendingAccount}`);
+  if (store.mode !== 'cloud' && store.pendingAccount) return h('div', { class: 'banner pending' }, accountLine('계정 확인 중…', store.pendingAccount));
   if (store.mode === 'cloud') {
     const lo = localOnlyCounts();
     const detail = Object.keys(LOCAL_WORDS).filter((k) => lo[k]).map((k) => `${LOCAL_WORDS[k]} ${lo[k]}`).join(' · ');
@@ -46,7 +52,7 @@ export function storageBanner({ loginLink = true } = {}) {
     return h(
       'div',
       { class: 'banners' },
-      h('div', { class: 'banner ok' }, `계정에 저장 중 · ${store.user?.email ?? ''}`),
+      h('div', { class: 'banner ok' }, accountLine('계정에 저장 중', store.user?.email ?? '')),
       lo.total ? h('div', { class: 'banner local-only' }, h('div', null, `이 기기에만 있는 기록 ${lo.total}건`, h('span', { class: 'term-sub' }, detail)), move) : null,
     );
   }
@@ -64,9 +70,9 @@ const loginButton = () => googleButton({ onClick: () => signIn().catch((e) => to
 export function brewNotFound() {
   let box;
   if (store.mode === 'cloud') {
-    box = h('div', { class: 'banner login' }, h('div', null, '다른 사람의 기록이므로 접근할 수 없습니다.'), h('div', { class: 'banner ok' }, `계정에 저장 중 · ${store.user?.email ?? ''}`));
+    box = h('div', { class: 'banner login' }, h('div', null, '다른 사람의 기록이므로 접근할 수 없습니다.'), h('div', { class: 'banner ok' }, accountLine('계정에 저장 중', store.user?.email ?? '')));
   } else if (store.pendingAccount) {
-    box = h('div', { class: 'banner pending' }, `계정 확인 중… · ${store.pendingAccount}`); // 확인이 끝나면 main.js 가 다시 그린다
+    box = h('div', { class: 'banner pending' }, accountLine('계정 확인 중…', store.pendingAccount)); // 확인이 끝나면 main.js 가 다시 그린다
   } else if (firebaseEnabled()) {
     box = h('div', { class: 'banner login' }, h('div', { class: 'pre-line' }, '기록이 기기에 없습니다.\n계정에 저장된 기록이라면 로그인 후 확인할 수 있습니다.'), loginButton());
   } else {
@@ -87,7 +93,7 @@ export function homeScreen() {
     active?.state?.status === 'running' ? h('a', { class: 'button primary big wide', href: '#/timer' }, '진행 중인 추출로 돌아가기') : null,
     active?.state?.status === 'ready' ? h('a', { class: 'button primary big wide', href: '#/timer' }, '준비한 추출로 돌아가기') : null,
     // 남은 원두가 10g 이하인 원두(사용자 요청 9/25) — 다 썼으면 그 자리에서 「소모」로 바꾼다
-    ...store.list('beans').filter((x) => beanStock(x, brews).low).map((x) => lowBeanNotice(x, brews, 'home')),
+    ...store.list('beans').filter((x) => beanStock(x, brews, store.list('beans')).low).map((x) => lowBeanNotice(x, brews, 'home')),
     h('a', { class: 'button primary big wide', href: '#/prep' }, '추출하기'),
     waiting.length ? section('테이스팅 노트를 기다리는 기록', ...waiting.map(brewRow)) : null,
     section('최근 기록', ...(brews.length ? brews.slice(0, 3).map(brewRow) : [h('div', { class: 'hint' }, '아직 기록이 없습니다.')])),
@@ -140,18 +146,18 @@ export function historyScreen() {
   };
   function draw() {
     if (!brews.length) return fill(root, h('h1', null, '기록 (0)'), h('div', { class: 'hint' }, '아직 기록이 없습니다.'));
+    // 목록은 홈 「최근 기록」처럼 칸 안에 줄마다 상자(9/26 사용자 요청 — 기록·원두·레시피 목록 통일)
     if (!sel) {
       return fill(
         root,
         h('h1', null, `기록 (${brews.length})`),
-        h('div', { class: 'hint sub-hint' }, '길게 누르면 여러 기록을 골라 AI 로 함께 공유할 수 있습니다.'),
-        ...brews.map((b) => longPress(brewRow(b), b.id)),
+        section(null, h('div', { class: 'hint sub-hint' }, '길게 누르면 여러 기록을 골라 AI 로 함께 공유할 수 있습니다.'), ...brews.map((b) => longPress(brewRow(b), b.id))),
       );
     }
     fill(
       root,
       h('h1', null, `${sel.size}건 고름`),
-      ...brews.map(pickRow),
+      section(null, ...brews.map(pickRow)),
       h(
         'div',
         { class: 'select-bar' },
@@ -181,7 +187,7 @@ function surveySummary(s) {
     const word = v.level == null ? '선택 안 함' : INTENSITY_WORDS[v.level - 1];
     rows.push(h('dt', null, it.label), h('dd', null, [word, ...(v.kinds ?? [])].join(' · '), v.note ? h('div', { class: 'note' }, v.note) : null));
   }
-  rows.push(h('dt', null, WORDS.offFlavor.label), h('dd', null, s.offFlavors.length ? s.offFlavors.join(', ') : '—', s.offFlavorNote ? h('div', { class: 'note' }, s.offFlavorNote) : null));
+  rows.push(h('dt', null, WORDS.offFlavor.label), h('dd', null, s.offFlavors.length ? s.offFlavors.join(', ') : '없음', s.offFlavorNote ? h('div', { class: 'note' }, s.offFlavorNote) : null));
   const perceived = Object.entries(s.notePerception ?? {});
   if (perceived.length) rows.push(h('dt', null, WORDS.notePerception.label), h('dd', null, perceived.map(([n, p]) => `${n}: ${p}`).join(' · ')));
   rows.push(h('dt', null, WORDS.myNotes.label), h('dd', null, s.myNotes.length ? s.myNotes.join(', ') : '—'));
@@ -230,7 +236,7 @@ function adviceSection(b) {
     adv.grindUm && !adv.clicks ? h('div', { class: 'hint' }, '설정 → 그라인더에 클릭당 µm 를 적거나, 참고 µm 를 두 눈금 이상에서 기록하면 클릭 수로 알려 드립니다.') : null,
     adv.doseDeltaG ? h('div', { class: 'hint' }, ratioChange(b.conditions, adv.doseDeltaG)) : null,
     c.cues.length ? h('div', { class: 'hint' }, `근거: ${c.cues.map((x) => x.text).join(' · ')}`) : null,
-    upc ? h('div', { class: 'source' }, `클릭당 약 ${upc.value}µm (${upc.source === 'manual' ? '설정에 적은 값' : `기록 ${upc.n}건으로 추정`})`) : null,
+    upc ? h('div', { class: 'source' }, `클릭당 약 ${n2(upc.value)}µm (${upc.source === 'manual' ? '설정에 적은 값' : `기록 ${upc.n}건으로 추정`})`) : null,
     h('div', { class: 'source' }, '방향: Barista Hustle 「Coffee Compass」 · 조정 단위(30µm·0.5g): 언스페셜티 브루잉 가이드. 다음 추출 준비 화면에도 보입니다.'),
   );
 }
@@ -266,8 +272,11 @@ export function adviceView(advice, brew) {
     advice.questions.length ? h('div', { class: 'hint' }, `AI 의 질문: ${advice.questions.join(' · ')}`) : null,
   ];
 }
-function aiAdviceSection(b) {
-  const box = h('div', { class: 'stack' });
+// AI 답(JSON) 넣기 공용 칸(9/26 사용자 결정 A안 — 답 안의 기록 ID(brewId)로 맞는 기록을 찾아 저장한다).
+// 기록 화면 「AI 제안」과 AI 공유 화면 맨 아래에 같은 것을 둔다 — 어디서 붙여 넣어도 그 답의 기록으로 간다.
+// 기록 ID 가 비었거나 이 기기에 없는 기록이면 fallback(이 기록 · 공유한 기록 중 가장 최근)에 넣되, 그렇다고 알리고 넣을 기록을 보인 뒤 저장한다.
+// where = record | share(로그용), onSaved(기록) = 저장 뒤 부르는 곳이 할 일
+export function adviceImportBox({ fallback = null, where, onSaved = null }) {
   const pasteBox = h('textarea', { rows: 5, placeholder: 'AI 가 준 JSON 을 여기에 붙여 넣으세요. 앞뒤 설명 글이나 ```json 표시가 있어도 됩니다.' });
   const result = h('div', { class: 'stack' });
   const fileInput = h('input', {
@@ -282,45 +291,76 @@ function aiAdviceSection(b) {
       check('file');
     },
   });
+  const title = (x) => `${fmtDateTime(x.timer.startedAt)} · ${x.recipe.name} · ${x.bean?.name ?? '원두 미입력'}`;
   function check(via) {
     let raw;
     let fixes = [];
     try {
       ({ raw, fixes } = readAdviceText(pasteBox.value));
     } catch (e) {
-      logEvent('aiAdvice.importFail', { stage: 'parse', errors: [e.message], via }, { brewId: b.id });
+      logEvent('aiAdvice.importFail', { stage: 'parse', errors: [e.message], via, where }, { brewId: fallback?.id ?? null });
       return fill(result, h('div', { class: 'notice error' }, e.message));
     }
-    const { advice, errors, warnings } = validateAdvice(raw, { brew: b });
+    const want = typeof raw?.brewId === 'string' ? raw.brewId.trim() : '';
+    const found = want ? store.get('brews', want) : null;
+    const target = found ?? fallback;
+    if (!target) {
+      logEvent('aiAdvice.importFail', { stage: 'route', errors: [`brewId ${want || '없음'}`], via, where });
+      return fill(result, h('div', { class: 'notice error' }, want ? `기록 ID(${want})에 맞는 기록이 이 기기에 없습니다.` : '답에 기록 ID(brewId)가 없습니다. 그 기록 화면에서 붙여 넣어 주세요.'));
+    }
+    const routed = found ? 'brewId' : 'fallback';
+    // 못 찾아 fallback 에 넣을 때는 검사가 «다른 기록의 답»으로 막지 않게 그 기록 ID 로 본다(알림은 아래에 따로)
+    const { advice, errors, warnings } = validateAdvice(found ? raw : { ...raw, brewId: target.id }, { brew: target });
     if (errors.length) {
-      logEvent('aiAdvice.importFail', { stage: 'validate', errors: errors.slice(0, 5), via }, { brewId: b.id });
+      logEvent('aiAdvice.importFail', { stage: 'validate', errors: errors.slice(0, 5), via, where }, { brewId: target.id });
       return fill(result, h('div', { class: 'notice error' }, `고칠 곳 ${errors.length}개`, h('ul', null, ...errors.map((m) => h('li', null, m)))));
     }
-    const notes = [...fixes, ...warnings];
+    const notes = [
+      ...fixes,
+      ...warnings,
+      routed === 'fallback' ? (want ? `brewId: 「${want}」 기록을 이 기기에서 찾지 못해 아래 기록에 넣습니다.` : 'brewId: 비어 있어 아래 기록에 넣습니다.') : null,
+    ].filter(Boolean);
     fill(
       result,
       notes.length ? h('div', { class: 'notice warn' }, '확인해 주세요', h('ul', null, ...notes.map((m) => h('li', null, m)))) : null,
-      h('div', { class: 'import-preview' }, h('div', { class: 'field-label' }, '미리 보기'), ...adviceView(advice, b)),
+      h('div', { class: 'field-label' }, '넣을 기록'),
+      h('a', { href: `#/brew/${target.id}` }, title(target)),
+      target.aiAdvice ? h('div', { class: 'hint' }, '이 기록에 넣어 둔 AI 제안이 있어 새 답으로 바꿉니다.') : null,
+      h('div', { class: 'import-preview' }, h('div', { class: 'field-label' }, '미리 보기'), ...adviceView(advice, target)),
       h('button', {
         type: 'button',
         class: 'primary wide',
         onClick: () => {
-          b.aiAdvice = advice;
-          store.put('brews', b);
-          logEvent('aiAdvice.import', { changes: advice.changes.length, next: Object.keys(advice.next).filter((k) => advice.next[k] != null), warnings: notes.length, confidence: advice.confidence, via }, { brewId: b.id });
-          toast('AI 제안을 이 기록에 저장했습니다. 다음 추출 준비 화면에서 쓸 수 있습니다.');
-          draw();
+          const replaced = Boolean(target.aiAdvice);
+          target.aiAdvice = advice;
+          store.put('brews', target);
+          logEvent('aiAdvice.import', { changes: advice.changes.length, next: Object.keys(advice.next).filter((k) => advice.next[k] != null), warnings: notes.length, confidence: advice.confidence, via, where, routed, replaced }, { brewId: target.id });
+          toast('AI 제안을 기록에 저장했습니다. 다음 추출 준비 화면에서 쓸 수 있습니다.');
+          pasteBox.value = '';
+          fill(result, h('div', { class: 'notice' }, '저장했습니다: ', h('a', { href: `#/brew/${target.id}` }, title(target))));
+          onSaved?.(target);
         },
       }, 'AI 제안 저장'),
     );
   }
+  return [
+    pasteBox,
+    h('div', { class: 'row' }, h('button', { type: 'button', onClick: () => check('paste') }, '확인하기'), h('button', { type: 'button', onClick: () => fileInput.click() }, '파일에서 불러오기')),
+    fileInput,
+    result,
+  ];
+}
+
+function aiAdviceSection(b) {
+  const box = h('div', { class: 'stack' });
+  const imp = adviceImportBox({ fallback: b, where: 'record', onSaved: (t) => t.id === b.id && draw() });
   async function copyResultPrompt() {
     const ok = await copyText(adviceResultPrompt());
     logEvent('aiAdvice.promptCopy', { ok }, { brewId: b.id });
     if (ok) toast('결과 받기 프롬프트를 복사했습니다. AI 대화창에 붙여 넣어 보내세요.');
     else {
-      pasteBox.value = adviceResultPrompt();
-      pasteBox.select();
+      imp[0].value = adviceResultPrompt(); // 붙여 넣기 칸에 넣어 두고 직접 복사하게
+      imp[0].select();
       toast('복사하지 못했습니다. 칸에 넣어 둔 글을 길게 눌러 복사해 주세요.');
     }
   }
@@ -330,13 +370,10 @@ function aiAdviceSection(b) {
       { class: 'guide' },
       h('li', null, '[AI로 공유]로 기록을 AI 에게 보내고 이야기합니다.'),
       h('li', null, '결론이 나면 AI 가 「앱에 넣을 결과를 드릴까요?」라고 묻습니다. 달라고 하면 JSON 을 줍니다. 묻지 않으면 [결과 받기 프롬프트 복사]로 요청하세요.'),
-      h('li', null, 'AI 답의 코드 블록을 복사해 아래에 붙여 넣고 [확인하기]를 누릅니다(파일로 받았으면 [파일에서 불러오기]).'),
+      h('li', null, 'AI 답의 코드 블록을 복사해 아래에 붙여 넣고 [확인하기]를 누릅니다(파일로 받았으면 [파일에서 불러오기]). 답 안의 기록 ID 로 그 답의 기록에 넣습니다.'),
     ),
     h('button', { type: 'button', class: 'wide', onClick: copyResultPrompt }, '결과 받기 프롬프트 복사'),
-    pasteBox,
-    h('div', { class: 'row' }, h('button', { type: 'button', onClick: () => check('paste') }, '확인하기'), h('button', { type: 'button', onClick: () => fileInput.click() }, '파일에서 불러오기')),
-    fileInput,
-    result,
+    ...imp,
   ];
   function draw() {
     const a = b.aiAdvice;
@@ -365,6 +402,21 @@ function aiAdviceSection(b) {
   return section('AI 제안', box);
 }
 
+// 따른 AI 제안(9/26 사용자 결정): 이 추출이 어느 기록의 제안을 따랐는지(그 기록으로 가는 링크) · 맞춘 값과 맞춘 뒤 바꾼 칸 · 그때 제안 원문(복사본)
+function followedSection(b) {
+  const fa = b.followedAdvice;
+  if (!fa) return null;
+  const src = store.get('brews', fa.fromBrewId);
+  const when = fa.fromStartedAt ? fmtDateTime(fa.fromStartedAt) : '이전';
+  return section(
+    '따른 AI 제안',
+    h('div', null, src ? h('a', { href: `#/brew/${src.id}` }, `${when} 추출`) : `${when} 추출(지운 기록)`, '의 AI 제안대로 맞춰 내렸습니다.'),
+    h('ul', { class: 'advice' }, ...followLines(fa).map((l) => h('li', null, l))),
+    fa.dialSkipped ? h('div', { class: 'hint' }, '제안이 달린 기록과 그라인더가 달라 그라인더 표시값은 맞추지 않았습니다.') : null,
+    fa.advice ? h('details', { class: 'sub-details' }, h('summary', null, '그때 제안 보기'), ...adviceView(fa.advice, src)) : null,
+  );
+}
+
 export function detailScreen(id) {
   const b = store.get('brews', id);
   if (!b) return brewNotFound();
@@ -378,6 +430,7 @@ export function detailScreen(id) {
     section('타이머', timerTable(b), brewFigure(b)),
     measurementOf(b) ? section('분쇄 측정', h('div', { class: 'hint' }, measureSummary(measurementOf(b))), measureView(measurementOf(b))) : null,
     section('조건', conditionsList(b)),
+    followedSection(b),
     section('맛', surveySummary(b.survey)),
     adviceSection(b),
     aiAdviceSection(b),

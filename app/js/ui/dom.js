@@ -19,6 +19,19 @@ export function h(tag, props, ...children) {
   return el;
 }
 
+// 여러 줄 입력칸 높이를 내용에 맞춘다(9/26 사용자 요청 — 많이 적어도 칸 안에서 스크롤하지 않고 전부 보이게).
+// 처음 줄 수(rows)보다 작아지지는 않는다. 숨은 칸(닫힌 details·팝업 밖)은 높이가 0 이라 건너뛰고, 보일 때 다시 맞춘다(main.js 가 부른다).
+export function autoGrow(el) {
+  if (!(el instanceof HTMLTextAreaElement) || !el.isConnected || el.offsetParent === null) return;
+  const cs = getComputedStyle(el);
+  const border = parseFloat(cs.borderTopWidth) + parseFloat(cs.borderBottomWidth);
+  el.style.height = 'auto';
+  el.style.height = `${el.scrollHeight + border}px`;
+}
+export function growAll(root = document) {
+  root.querySelectorAll?.('textarea').forEach(autoGrow);
+}
+
 // 자식 바꾸기 — 앱은 replaceChildren 을 직접 쓰지 않고 이것만 쓴다(tests/app-files.test.mjs 가 막는다).
 // DOM 의 replaceChildren 은 null 을 건너뛰지 않고 「null」 글자로 넣는다 — 9/24 세 번(원두 노트·타이머·준비 화면) 화면에 찍혔다.
 export function fill(el, ...children) {
@@ -72,10 +85,12 @@ export function tags(list) {
 }
 
 // 숫자: − [입력] + (순서대로 올리고 내리기 + 직접 입력). prefix = 입력칸 앞 표시(비율의 「1:」)
-// decimals = 남기는 소수 자리(처음 값 1). 분쇄 측정(9/26)은 사이트 표기대로 2자리 — 그때 입력칸은 step 'any'(−/+ 는 step 만큼).
-export function stepper({ value, step = 1, min = 0, max = 9999, unit = '', prefix = '', decimals = 1, onChange }) {
-  const input = h('input', { type: 'number', inputMode: 'decimal', value: value ?? '', step: decimals > 1 ? 'any' : step, min, max, class: 'stepper-input' });
+// decimals = 남기는 소수 자리(처음 값 2 — 9/26 사용자 요청: 셋째 자리에서 반올림해 둘째 자리까지, 처음 보이는 값도).
+// 입력칸 step 은 'any'(소수를 적어도 칸이 틀렸다고 표시되지 않게) — −/+ 는 step 만큼 움직인다.
+export function stepper({ value, step = 1, min = 0, max = 9999, unit = '', prefix = '', decimals = 2, onChange }) {
   const f = 10 ** decimals;
+  const shown = (v) => (typeof v === 'number' && Number.isFinite(v) ? Math.round(v * f) / f : v ?? '');
+  const input = h('input', { type: 'number', inputMode: 'decimal', value: shown(value), step: 'any', min, max, class: 'stepper-input' });
   const set = (v) => {
     if (v === '' || v == null || Number.isNaN(v)) {
       input.value = '';
@@ -443,6 +458,32 @@ export function modal({ title, body, actions }) {
         body ? h('p', null, body) : null,
         h('div', { class: 'row' }, ...actions.map((a) => h('button', { type: 'button', class: a.primary ? 'primary' : '', onClick: () => close(a.key) }, a.label))),
       ),
+    );
+    document.body.append(back);
+  });
+}
+
+// 목록에서 하나 고르는 팝업(9/26 — 분쇄 측정의 원두 고르기·이전 원두 가져오기가 함께 쓴다). 목록은 팝업 안에서 스크롤.
+// items = [{ value, label, sub, badge, inactive }], extra = 아래 단추 [{ key, label }] → 고른 value, 단추 key, 바깥·취소면 null
+export function pickOne({ title, hint = null, items, emptyText = '고를 것이 없습니다.', extra = [] }) {
+  return new Promise((resolve) => {
+    const close = (v) => {
+      back.remove();
+      resolve(v);
+    };
+    const list = h(
+      'div',
+      { class: 'pick-list', role: 'listbox', 'aria-label': title },
+      ...items.map((it) => h('button', { type: 'button', class: `pick-item${it.inactive ? ' inactive' : ''}`, onClick: () => close({ value: it.value }) },
+        h('span', null, it.label, it.badge ? h('span', { class: 'badge' }, it.badge) : null),
+        it.sub ? h('span', { class: 'hint' }, it.sub) : null)),
+      items.length ? null : h('div', { class: 'hint' }, emptyText),
+    );
+    const back = h(
+      'div',
+      { class: 'modal-back', onClick: (e) => e.target === back && close(null) },
+      h('div', { class: 'modal sheet', role: 'dialog', 'aria-label': title }, h('h3', null, title), hint ? h('p', { class: 'hint' }, hint) : null, list,
+        h('div', { class: 'still-actions' }, ...extra.map((a) => h('button', { type: 'button', onClick: () => close({ key: a.key }) }, a.label)), h('button', { type: 'button', onClick: () => close(null) }, '취소'))),
     );
     document.body.append(back);
   });

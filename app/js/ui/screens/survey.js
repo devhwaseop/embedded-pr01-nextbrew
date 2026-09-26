@@ -4,7 +4,7 @@
 // - 항목 이름을 누르면 메모 칸이 열린다(슬라이더는 그대로 두고 보조로 적는다)
 // - 종류는 칩으로 고른다(산미: 상큼한/시큼한 등)
 
-import { h, section, chips, tagEditor, termOf, levelSlider } from '../dom.js';
+import { h, fill, section, chips, tagEditor, termOf, levelSlider } from '../dom.js';
 import { WORDS } from '../../core/words.js';
 import { store } from '../../core/store.js';
 import { SURVEY_ITEMS, INTENSITY_WORDS, LIKING_WORDS, OFF_FLAVORS, NOTE_PERCEPTION, FLAVOR_CHIPS, emptySurvey } from '../../core/schema.js';
@@ -42,7 +42,12 @@ export function surveyScreen(id) {
   const b = store.get('brews', id);
   if (!b) return brewNotFound();
   const s = structuredClone(b.survey ?? emptySurvey());
-  const bean = b.bean?.id ? store.get('beans', b.bean.id) : null;
+  // 블렌드 템플릿으로 섞은 기록(9/26)은 섞은 원두들의 노트를 모은다
+  const bean = b.bean?.id
+    ? store.get('beans', b.bean.id)
+    : b.bean?.parts?.length
+      ? { notes: [...new Set(b.bean.parts.flatMap((p) => store.get('beans', p.id)?.notes ?? []))] }
+      : null;
   // 원두 노트 인식 미리 채우기(사용자 요청 9/25): 처음 쓰는 테이스팅 노트면, 같은 원두의 이전 기록에서 노트마다 «가장 최근에 답한 값»을 채운다.
   // 노트별로 따로 찾는다(한 기록을 통째로 옮기지 않음). 저장하면 이 기록에만 들어가고, 이전 기록은 바뀌지 않는다.
   const prefilled = b.survey ? {} : lastNotePerceptions(store.brews(), b, bean?.notes ?? []);
@@ -59,6 +64,9 @@ export function surveyScreen(id) {
     );
   });
 
+  // 잡미: 느낀 것만 고른다. 안 고르면 «없음»(9/26 사용자 판단 — 「없음」 칩은 뺐다). AI 공유는 MD 「없음」, JSON null(core/share.js · facts.js).
+  delete s.offFlavorNone; // 잠시 있던 「없음」 칩의 값(커밋 전)
+  const offBox = h('div', null, chips({ options: OFF_FLAVORS, selected: s.offFlavors, multi: true, onChange: (v) => (s.offFlavors = v) }));
   const off = noteToggle('잡미', s.offFlavorNote, (v) => (s.offFlavorNote = v));
   const beanNotes = bean?.notes ?? [];
   const extra = h('textarea', { rows: 3, placeholder: '특징적이거나 위에 없는 것', value: s.extraNote, class: s.extraNote ? '' : 'hidden', onInput: (e) => (s.extraNote = e.target.value) });
@@ -100,7 +108,7 @@ export function surveyScreen(id) {
     section(
       null,
       h('div', { class: 'row between' }, off.title),
-      chips({ options: OFF_FLAVORS, selected: s.offFlavors, multi: true, onChange: (v) => (s.offFlavors = v) }),
+      offBox,
       off.box,
     ),
     section(

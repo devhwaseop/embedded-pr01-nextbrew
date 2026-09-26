@@ -8,9 +8,9 @@
 // (9/25 사용자 보고 → 크롬 원본 share_service_impl.cc·ShareServiceImpl.java·navigator_share.cc 확인. 목록에 .md·.json 없음, .txt 있음).
 // 그래서 공유창으로 보낼 때만 같은 내용을 .txt(text/plain)로 싸서 보낸다. [파일 저장]은 고른 형식(.md·.json) 그대로다.
 
-import { h, fill, section, chips, toast, fmtDateTime } from '../dom.js';
+import { h, fill, section, chips, toast, fmtDateTime, autoGrow } from '../dom.js';
 import { icon } from '../icons.js';
-import { brewNotFound, SELECTION_KEY } from './records.js';
+import { brewNotFound, SELECTION_KEY, adviceImportBox } from './records.js';
 import { store } from '../../core/store.js';
 import { SHARE_FORMATS, SHARE_SCOPES } from '../../core/schema.js';
 import { buildSharePackage, buildSelectionPackage, shareFileName, shareSheetName, toJSON, toMarkdown, defaultSharePrompt, SHARE_ROLES } from '../../core/share.js';
@@ -38,6 +38,13 @@ export function shareScreen(id) {
   let format = SHARE_FORMATS.includes(store.settings().shareFormat) ? store.settings().shareFormat : 'md';
   let scope = SHARE_SCOPES.includes(store.settings().shareScope) ? store.settings().shareScope : 'with';
   let ready = null; // { format, pkg, text, name, file, method }
+  // AI 답 넣기(9/26 사용자 결정 A안): 공유 → AI 앱 → 돌아와 이 화면 맨 아래에 붙여 넣는다. 답 안의 기록 ID 로 그 기록에 넣는다(records.js adviceImportBox).
+  // 형식·범위를 바꿔 화면을 다시 그려도 붙여 넣은 글이 남게 한 번만 만든다.
+  const answerSection = section(
+    'AI 답 넣기',
+    h('div', { class: 'hint' }, `AI 가 앱에 넣을 결과(JSON)를 주면 여기에 붙여 넣습니다. 답 안의 기록 ID 로 그 기록에 넣고, 기록 ID 를 못 찾으면 ${selIds ? '고른 기록 중 가장 최근 것' : '이 기록'}에 넣습니다(넣기 전에 보여 드립니다).`),
+    ...adviceImportBox({ fallback: b, where: 'share' }),
+  );
   let buildNo = 0;
 
   // ── 프롬프트(한 번만 만들고 다시 그릴 때 그대로 옮겨 붙인다 — 고치던 글·커서가 날아가지 않게) ──
@@ -65,6 +72,7 @@ export function shareScreen(id) {
   resetBtn.addEventListener('click', () => {
     promptText = defaultSharePrompt(kind);
     promptArea.value = promptText;
+    autoGrow(promptArea); // 글을 코드로 바꿔 넣으면 input 이 오지 않는다
     savePrompt();
     toast('기본 프롬프트로 되돌렸습니다.');
   });
@@ -101,7 +109,7 @@ export function shareScreen(id) {
       h('li', null, '[공유하기]를 누르고 AI 앱(ChatGPT·Gemini·Claude 등)을 고릅니다.'),
       h('li', null, 'AI 대화창에 파일이 붙으면, 프롬프트를 붙여 넣고 보냅니다.'),
       // 9/25: AI 답(JSON)을 앱으로 가져오기
-      h('li', null, 'AI 가 앱에 넣을 결과(JSON)를 주면, 기록 화면의 「AI 제안」에 붙여 넣습니다.'),
+      h('li', null, 'AI 가 앱에 넣을 결과(JSON)를 주면, 이 화면 맨 아래 「AI 답 넣기」에 붙여 넣습니다(기록 화면 「AI 제안」에서도 됩니다).'),
     ),
   );
 
@@ -111,8 +119,8 @@ export function shareScreen(id) {
     draw();
     const started = Date.now();
     const pkg = selIds
-      ? buildSelectionPackage({ brews: store.list('brews'), beans: store.list('beans'), ids: selIds })
-      : buildSharePackage({ brews: store.list('brews'), beans: store.list('beans'), current: b, scope });
+      ? buildSelectionPackage({ brews: store.list('brews'), beans: store.list('beans'), drippers: store.list('drippers'), ids: selIds })
+      : buildSharePackage({ brews: store.list('brews'), beans: store.list('beans'), drippers: store.list('drippers'), current: b, scope });
     const text = format === 'json' ? toJSON(pkg) : toMarkdown(pkg);
     const name = shareFileName(pkg, format);
     const file = new File([text], name, { type: TYPES[format] });
@@ -219,6 +227,7 @@ export function shareScreen(id) {
             h('details', null, h('summary', null, '내용 미리 보기'), h('pre', { class: 'preview' }, ready.text)),
           )
         : section(null, h('div', { class: 'buffering', role: 'status' }, h('span', { class: 'spinner', 'aria-hidden': 'true' }), '묶는 중…')),
+      answerSection,
       selIds ? h('a', { class: 'button wide', href: '#/history' }, '기록 목록으로') : h('a', { class: 'button wide', href: `#/brew/${b.id}` }, '기록으로 돌아가기'),
     );
   }

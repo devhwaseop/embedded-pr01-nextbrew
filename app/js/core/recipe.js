@@ -2,6 +2,8 @@
 // 시각(startSec·endSec)은 원문 그대로 둔다. 원두량에 따라 시간을 바꾸는 검증된 공식이 없어서다
 // (근거·원문 링크: docs/agent-notes/참고 출처 목록.md 「원두량 조정」).
 
+import { n2 } from './schema.js';
+
 // 단계 설명 고르기(사용자 결정 9/24): 직접 쓴 문장 → 레시피 원문 → 일반 설명 → 비움.
 // customHints = 설정의 stepHints[레시피 id] = { 단계 번호: 문장 }
 export const HINT_SOURCES = { custom: '내가 씀', recipe: '레시피 원문', general: '일반 설명', none: '없음' };
@@ -58,15 +60,16 @@ export function scaleAdvice(recipe, doseG) {
   if (dose > recipe.refDoseG) {
     return {
       direction: 'up',
-      text: `기준(${recipe.refDoseG}g)보다 원두가 많아 원두층이 두꺼워집니다. 물이 늦게 빠지면 분쇄를 굵게 하는 쪽으로 조정해 보세요.`,
+      text: `기준(${n2(recipe.refDoseG)}g)보다 원두가 많아 원두층이 두꺼워집니다. 물이 늦게 빠지면 분쇄를 굵게 하는 쪽으로 조정해 보세요.`,
     };
   }
   return {
     direction: 'down',
-    text: `기준(${recipe.refDoseG}g)보다 원두가 적어 원두층이 얇아집니다. 물이 빨리 빠지면 분쇄를 가늘게 하거나 나눠 붓는 쪽을 고려해 보세요.`,
+    text: `기준(${n2(recipe.refDoseG)}g)보다 원두가 적어 원두층이 얇아집니다. 물이 빨리 빠지면 분쇄를 가늘게 하거나 나눠 붓는 쪽을 고려해 보세요.`,
   };
 }
 
+// 비율 표기: 소수 셋째 자리에서 반올림해 둘째 자리까지(9/26 사용자 요청 — 전에는 첫째 자리까지). 1:15.625 → 1:15.63
 export function formatRatio(r) {
-  return `1:${(Math.round(r * 10) / 10).toString()}`;
+  return `1:${n2(r)}`;
 }

@@ -4,11 +4,15 @@
 //       → ① 「이 값이 맞나요?」 사진(또는 그래프)과 읽은 값을 나란히 — 틀린 칸은 그 자리에서 고친다. 확인이 필요한 칸은 강조
 //       → ② 「Click 120 은 어떤 값인가요?」 [영점 반영값] [그라인더 표시값] — 각각 그라인더 표시값이 얼마가 되는지 함께 보인다
 //       → [넣기]
-// 사진은 줄여서(가로 720 JPEG) 계정에 저장할 때만 기록에 함께 둔다 — 로그인하지 않은 이 기기 저장(localStorage)은 한도(약 5MB)가 작아서다.
+// 사진은 줄여서(가로 720 JPEG) 계정에 저장할 때만 둔다 — 로그인하지 않은 이 기기 저장(localStorage)은 한도(약 5MB)가 작아서다.
+// 원두별로 모은다(9/26 사용자 요청 — 원두마다 같은 클릭의 분쇄가 다르다고 본다): 측정은 «분쇄 측정» 모음(measurements)에 원두·그라인더와 함께 저장하고,
+// 기록에는 사진을 뺀 사본 + measurementId 를 둔다. 원두를 아는 곳(추출 준비에서 고른 원두·기록의 원두)은 그 원두로,
+// 모르는 곳(그라인더 화면·원두를 안 고른 준비)은 ③ 「어떤 원두의 측정인가요?」 팝업에서 원두 목록(스크롤)으로 고른다.
 
-import { h, field, stepper, toast } from './dom.js';
+import { h, field, stepper, toast, fmtDateTime, pickOne } from './dom.js';
 import { measureFigure } from './charts.js';
 import { readMeasureCsv, clickToDial, sameMachine, measureWarnings, MEASURE_SOURCE, PHOTO_SOURCE } from '../core/grindMeasure.js';
+import { n2, createMeasurement } from '../core/schema.js';
 import { readMeasurePhoto, shrinkPhoto } from './measureOcr.js';
 import { store } from '../core/store.js';
 import { logEvent } from '../core/log.js';
@@ -28,7 +32,7 @@ function sheet({ title, body, actions }) {
         { class: 'modal sheet', role: 'dialog', 'aria-label': title },
         h('h3', null, title),
         ...body,
-        h('div', { class: 'still-actions' }, ...actions.map((a) => h('button', { type: 'button', class: a.primary ? 'primary' : '', onClick: () => close(a.key) }, a.label, a.sub ? h('span', { class: 'term-sub' }, a.sub) : null))),
+        h('div', { class: 'still-actions' }, ...actions.map((a) => h('button', { type: 'button', class: `${a.primary ? 'primary' : ''}${a.hidden ? ' hidden' : ''}`, 'data-key': a.key ?? '', onClick: () => close(a.key) }, a.label, a.sub ? h('span', { class: 'term-sub' }, a.sub) : null))),
       ),
     );
     document.body.append(back);
@@ -47,15 +51,33 @@ function progressSheet() {
 export const MEANING_WORDS = { zero: '영점 반영값', dial: '그라인더 표시값' };
 const isCsv = (f) => /\.csv$/i.test(f.name) || f.type === 'text/csv';
 
-// 기록에 붙은 측정의 사진·그래프(CSV 면 원 데이터로 그린 그래프, 사진이면 보관한 사진)
+// 기록·원두에 붙은 측정의 사진·그래프(CSV 면 원 데이터로 그린 그래프, 사진이면 보관한 사진 — 기록에는 사진이 없어 모음에서 찾는다)
 export function measureView(m) {
   if (m.bins?.length) return measureFigure(m);
-  if (m.photo?.dataUrl) return h('img', { class: 'measure-photo', src: m.photo.dataUrl, alt: '언스페셜티 분쇄도 결과 사진' });
+  const photo = m.photo ?? (m.measurementId ? store.get('measurements', m.measurementId)?.photo : null);
+  if (photo?.dataUrl) return h('img', { class: 'measure-photo', src: photo.dataUrl, alt: '언스페셜티 분쇄도 결과 사진' });
   return null;
 }
 
-// grinder = 지금 고른 그라인더(영점·이름), via = prep|result, onDone(측정) = 확인을 마친 값
-export function measureImportButton({ grinder, via, onDone }) {
+// ③ 어떤 원두의 측정인가(원두를 모를 때만): 목록은 팝업 안에서 스크롤. 측정 메모에 원두 이름의 낱말이 들어 있으면 위로 올리고 표시한다.
+async function pickBean(memo) {
+  const all = store.list('beans');
+  const words = (b) => b.name.split(/\s+/).filter((w) => w.length >= 2);
+  const hit = (b) => Boolean(memo) && words(b).some((w) => memo.includes(w));
+  const order = [...all].sort((a, b) => hit(b) - hit(a) || (a.status === 'consumed') - (b.status === 'consumed') || a.name.localeCompare(b.name, 'ko'));
+  const r = await pickOne({
+    title: '어떤 원두의 측정인가요?',
+    hint: '원두마다 같은 클릭에서도 분쇄가 달라 원두별로 모읍니다.',
+    items: order.map((b) => ({ value: b, label: b.name, badge: hit(b) ? '메모와 비슷' : null, sub: [b.roaster, b.status === 'consumed' ? '소모' : null].filter(Boolean).join(' · '), inactive: b.status === 'consumed' })),
+    emptyText: '등록한 원두가 없습니다.',
+    extra: [{ key: 'none', label: '원두 없이 넣기' }],
+  });
+  return r?.value ?? (r?.key === 'none' ? 'none' : null);
+}
+
+// grinder = 지금 고른 그라인더(영점·이름), bean = 아는 원두(없으면 ③ 팝업), via = prep|result|grinder,
+// onDone(측정) = 확인을 마치고 모음에 저장한 값(사진 뺀 사본 + measurementId — 기록에 둘 것)
+export function measureImportButton({ grinder, bean = null, via, onDone, label = '측정 결과 불러오기(사진·CSV)' }) {
   const input = h('input', { type: 'file', accept: '.csv,text/csv,image/*', class: 'hidden' });
   input.addEventListener('change', async () => {
     const f = input.files[0];
@@ -147,22 +169,35 @@ export function measureImportButton({ grinder, via, onDone }) {
         logEvent('grind.measureCancel', { kind, stage: 'click', via });
         return finish();
       }
+      // ③ 어떤 원두인가(모를 때만)
+      let forBean = bean;
+      if (!forBean) {
+        const picked = await pickBean(v.memo);
+        if (!picked) {
+          logEvent('grind.measureCancel', { kind, stage: 'bean', via });
+          return finish();
+        }
+        forBean = picked === 'none' ? null : picked;
+      }
       const dial = clickToDial(v.click, meaning, z);
       const photo = kind === 'photo' && store.mode === 'cloud' ? await shrinkPhoto(f).catch(() => null) : null;
-      const done = {
+      const record = store.put('measurements', createMeasurement({
         ...m,
         ...v,
         clickMeaning: meaning,
         dial,
         zeroOffset: z,
         grinderId: grinder?.id ?? null,
+        beanId: forBean?.id ?? null,
         sdSource: kind === 'csv' ? (v.sdUm === m.sdEstimate ? 'estimate' : 'user') : 'photo',
         photo: photo ? { dataUrl: photo.dataUrl, width: photo.width, height: photo.height } : null,
         importedAt: new Date().toISOString(),
-      };
+      }));
+      const { photo: _p, schemaVersion: _s, updatedAt: _u, id: measurementId, ...rest } = record;
+      const done = { ...rest, measurementId }; // 기록에 둘 사본(사진 없음)
       const edited = Object.keys(v).filter((k) => v[k] !== read[k]);
       logEvent('grind.measureImport', {
-        via, kind, fileName: m.fileName, machine: v.machine, click: v.click, clickMeaning: meaning, dial, zeroOffset: z,
+        via, kind, measurementId, beanId: forBean?.id ?? null, beanAsked: !bean, fileName: m.fileName, machine: v.machine, click: v.click, clickMeaning: meaning, dial, zeroOffset: z,
         machineMismatch: Boolean(grinder && v.machine && !sameMachine(grinder.name, v.machine)),
         meanUm: v.meanUm, sdUm: v.sdUm, source: m.source ?? (kind === 'csv' ? MEASURE_SOURCE : PHOTO_SOURCE),
         edited, // 인식값에서 사용자가 고친 칸 — 사진 인식률의 근거
@@ -175,11 +210,25 @@ export function measureImportButton({ grinder, via, onDone }) {
       return;
     }
   });
-  return [h('button', { type: 'button', class: 'wide', onClick: () => input.click() }, '측정 결과 불러오기(사진·CSV)'), input];
+  return [h('button', { type: 'button', class: 'wide', onClick: () => input.click() }, label), input];
 }
 
 // 기록·준비 화면의 짧은 요약 한 줄
 export function measureSummary(m) {
   const from = m.source === PHOTO_SOURCE ? '사진' : 'CSV';
-  return `${m.machine ?? ''} Click ${m.click ?? '—'}(${MEANING_WORDS[m.clickMeaning] ?? '?'}) · 평균 ${m.meanUm ?? '—'}µm · 표준편차 ${m.sdUm ?? '—'}µm${m.d50 != null ? ` · D50 ${Math.round(m.d50)}µm` : ''} · ${from}`;
+  return `${m.machine ?? ''} Click ${m.click ?? '—'}(${MEANING_WORDS[m.clickMeaning] ?? '?'}) · 평균 ${n2(m.meanUm ?? '—')}µm · 표준편차 ${n2(m.sdUm ?? '—')}µm${m.d50 != null ? ` · D50 ${Math.round(m.d50)}µm` : ''} · ${from}`;
+}
+
+// 원두·그라인더의 측정 목록 한 줄: 「K6 · Click 120(영점 반영값) → 표시값 123 · 평균 1347.69µm · 날짜」 + 펼치면 사진·그래프
+export function measureListItem(m, { showBean = false, showGrinder = true } = {}) {
+  const g = m.grinderId ? store.get('grinders', m.grinderId) : null;
+  const bean = m.beanId ? store.get('beans', m.beanId) : null;
+  const head = [
+    showBean ? bean?.name ?? '원두 없음' : null,
+    showGrinder ? g?.name ?? m.machine ?? '' : null,
+    `Click ${m.click ?? '—'}(${MEANING_WORDS[m.clickMeaning] ?? '?'})${m.dial != null ? ` → 표시값 ${m.dial}` : ''}`,
+    `평균 ${n2(m.meanUm ?? '—')}µm`,
+    m.importedAt ? fmtDateTime(Date.parse(m.importedAt)) : null,
+  ].filter(Boolean).join(' · ');
+  return h('details', { class: 'sub-details measure-item' }, h('summary', null, head), h('div', { class: 'hint' }, measureSummary(m)), measureView(m));
 }

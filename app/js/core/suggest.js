@@ -21,8 +21,9 @@ export function suggestNotes(beans, { country, process, excludeId = null }, limi
 // 테이스팅 노트의 원두 노트 인식 미리 채우기(사용자 요청 9/25 — screens/survey.js).
 // 같은 원두(id)로 이 기록보다 먼저 내린 기록들에서, 노트마다 가장 최근에 답한 인식 값 → { 노트: { value, at(그 추출 시각) } }
 export function lastNotePerceptions(brews, current, notes) {
+  const ref = (b) => b.bean?.id ?? b.bean?.blendId ?? null; // 블렌드 템플릿으로 섞은 기록은 같은 템플릿끼리(9/26)
   const earlier = brews
-    .filter((x) => x.id !== current.id && current.bean?.id && x.bean?.id === current.bean.id && x.survey && x.timer.startedAt < current.timer.startedAt)
+    .filter((x) => x.id !== current.id && ref(current) && ref(x) === ref(current) && x.survey && x.timer.startedAt < current.timer.startedAt)
     .sort((a, b) => b.timer.startedAt - a.timer.startedAt);
   const out = {};
   for (const n of notes) {

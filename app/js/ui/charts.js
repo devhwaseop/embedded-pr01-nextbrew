@@ -6,7 +6,7 @@
 // 색은 흰 바탕에서 3:1 이상(WCAG 1.4.11)이고, 색만으로 구분하지 않게 선 모양(점선·실선·점)도 다르게 한다.
 
 import { h, svg } from './dom.js';
-import { formatSec, timerOf } from '../core/schema.js';
+import { n2, formatSec, timerOf } from '../core/schema.js';
 import { planPoints, brewPlanPoints, brewActualPoints, planBars, ticks } from '../core/chart.js';
 
 const W = 330;
@@ -30,7 +30,7 @@ function grid(xMax, yMax, { sx, sy }, bottom) {
   const out = [];
   for (const v of ticks(yMax, 50, 100, 300)) {
     out.push(svg('line', { x1: L, x2: W - R, y1: sy(v), y2: sy(v), class: 'c-grid' }));
-    out.push(svg('text', { x: L - 6, y: sy(v) + 3.5, class: 'c-tick', 'text-anchor': 'end' }, `${v}g`));
+    out.push(svg('text', { x: L - 6, y: sy(v) + 3.5, class: 'c-tick', 'text-anchor': 'end' }, `${n2(v)}g`));
   }
   for (const v of ticks(xMax, 30, 60, 180)) {
     out.push(svg('line', { x1: sx(v), x2: sx(v), y1: T, y2: T + PLOT_H, class: 'c-grid' }));
@@ -77,7 +77,7 @@ export function planFigure(plan) {
       ].filter(Boolean);
     }),
   );
-  const summary = bars.map((b) => `${b.label} ${formatSec(b.start)}부터 ${b.targetCumG}g까지`).join(', ');
+  const summary = bars.map((b) => `${b.label} ${formatSec(b.start)}부터 ${n2(b.targetCumG)}g까지`).join(', ');
   return figure(`계획: ${summary}. 종료 목표 ${formatSec(plan.endSec)}`, el, legend([['lg-pour', '붓기'], ['lg-wait', '기다림']]));
 }
 
@@ -203,7 +203,7 @@ export function measureFigure(m) {
   out.push(svg('polyline', { points: [`${sx(lo).toFixed(1)},${sc(0)}`, ...cumPts].join(' '), class: 'c-cum' }));
   const el = svg('svg', { viewBox: `0 0 ${MW} ${H}`, class: 'c-svg' }, ...out);
   const fmt = (v) => (v == null ? '—' : `${Math.round(v)}µm`);
-  const label = `분쇄 입자 크기 분포: 평균 ${m.meanUm}µm, D10 ${fmt(m.d10)}, D50 ${fmt(m.d50)}, D90 ${fmt(m.d90)}`;
+  const label = `분쇄 입자 크기 분포: 평균 ${n2(m.meanUm)}µm, D10 ${fmt(m.d10)}, D50 ${fmt(m.d50)}, D90 ${fmt(m.d90)}`;
   return figure(
     label,
     el,

@@ -1,7 +1,7 @@
 // 아래 탭 아이콘(사용자 요청 9/24 — 「홈·기록·원두·설정」 글자를 아이콘으로).
 // 출처: Lucide v0.544.0 (lucide-static) — house · history · bean · settings 의 경로를 그대로 옮겼다.
 // 9/25: AI 공유 프롬프트의 복사 단추용 copy · check, 원두 탭 [원두 | 레시피] 전환의 레시피용 book-open 을 같은 버전에서 더했다.
-// 9/26: [서버] 칸용 beaker(같은 버전), [그라인더] 칸은 직접 그린 핸드밀(아래 grinder).
+// 9/26: [그라인더]·[드리퍼]·[서버] 칸은 사용자가 준 그림·사진 느낌으로 직접 그렸다(아래 grinder·dripper·server).
 //
 // ISC License
 // Copyright (c) for portions of Lucide are held by Cole Bemis 2013-2023 as part of Feather (MIT).
@@ -42,7 +42,36 @@ const PATHS = {
     ['ellipse', { cx: 9, cy: 16.4, rx: 1.4, ry: 2.1, 'stroke-width': 1.5 }], // 원두
     ['path', { d: 'M9.5 14.6c-.8.9-.1 1.8-.5 3.6', 'stroke-width': 1.2 }], // 원두 가운데 골
   ],
-  beaker: [['path', { d: 'M4.5 3h15' }], ['path', { d: 'M6 3v16a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V3' }], ['path', { d: 'M6 14h12' }]],
+  // 9/26 사용자가 준 실사 사진 느낌으로 직접 그림(Lucide 규격). 드리퍼 = 하리오 V60 01 투명(원뿔·나선 결·손잡이·받침판·굽),
+  // 서버 = 위는 곧고 아래로 퍼지는 유리 서버(따르는 입·꺾인 손잡이·커피 높이 선). beaker 는 서버 칸이 새 아이콘으로 바뀌어 뺐다.
+  dripper: [
+    ['path', { d: 'M2.5 4h15' }], // 테
+    ['path', { d: 'M3 4.2 8.6 13M17 4.2 11.4 13' }], // 원뿔
+    ['path', { d: 'M8.6 13h2.8M8.9 13v2M11.1 13v2' }], // 목
+    ['path', { d: 'M2.5 15.6h15' }], // 받침판
+    ['path', { d: 'M7.4 16v3.4h5.2V16' }], // 굽
+    ['path', { d: 'M16.8 5.6c3.3-.6 5.2.8 4.5 3.3-.5 1.7-2.1 2.7-6 3.4' }], // 손잡이
+    ['path', { d: 'M7 5.8c.6 2.2 1.6 4 3 5.4', 'stroke-width': 1.3 }], // 나선 결
+    ['path', { d: 'M12.8 5.8c-.5 2-1 3.6-1.6 5', 'stroke-width': 1.3 }],
+  ],
+  server: [
+    ['path', { d: 'M5.5 4.2h9.5v6.8l3.2 7.7a1 1 0 0 1-.9 1.4H3.2a1 1 0 0 1-.9-1.4l3.2-7.7Z' }], // 몸통
+    ['path', { d: 'M5.5 4.2 3.6 3' }], // 따르는 입
+    ['path', { d: 'M15 5.4h4.4a.9.9 0 0 1 .8 1.3L17.3 12.6' }], // 꺾인 손잡이
+    ['path', { d: 'M4 14.6h12.4' }], // 커피 높이
+  ],
+  // 9/26 아래 탭 [원두] 자리(원두·레시피·그라인더·드리퍼·서버 다섯 칸을 묶는 탭): 서버 위에 드리퍼를 얹어 내리는 모습을 직접 그렸다.
+  // 사용자가 고른 판 = ② 유리 서버 · 선 1.0(안쪽 결 0.7). 다른 아이콘(선 2)보다 선이 가늘어 WIDTH 로 따로 준다.
+  brew: [
+    ['ellipse', { cx: 10, cy: 3.2, rx: 6.3, ry: 1.3 }], // 드리퍼 테
+    ['path', { d: 'M3.7 3.4 8.2 9M16.3 3.4 11.8 9' }], // 원뿔
+    ['path', { d: 'M6.4 4.9c.8 1.5 1.8 2.8 2.9 3.8M9.3 5c.7 1.4 1.5 2.6 2.4 3.5M12.2 5c.4.9.9 1.7 1.4 2.4', 'stroke-width': 0.7 }], // 나선 결
+    ['ellipse', { cx: 10, cy: 10, rx: 5.8, ry: 1 }], // 받침판
+    ['path', { d: 'M5.5 12h9l1.6 7.4a1.3 1.3 0 0 1-1.3 1.6H5.2a1.3 1.3 0 0 1-1.3-1.6Z' }], // 유리 서버 몸통
+    ['path', { d: 'M14.5 13h3.1a.8.8 0 0 1 .7 1.2l-1.9 3.6' }], // 꺾인 손잡이
+    ['path', { d: 'M4.8 16.9h10.4' }], // 커피 높이
+    ['path', { d: 'M10 12.8v1.4', 'stroke-width': 0.7 }], // 떨어지는 커피
+  ],
   book: [
     ['path', { d: 'M12 7v14' }],
     ['path', { d: 'M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z' }],
@@ -53,10 +82,13 @@ const PATHS = {
   ],
 };
 
+// 선 굵기가 기본(2)과 다른 아이콘
+const WIDTH = { brew: 1 };
+
 export function icon(name) {
   return svg(
     'svg',
-    { viewBox: '0 0 24 24', width: 24, height: 24, fill: 'none', stroke: 'currentColor', 'stroke-width': 2, 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true', class: 'icon' },
+    { viewBox: '0 0 24 24', width: 24, height: 24, fill: 'none', stroke: 'currentColor', 'stroke-width': WIDTH[name] ?? 2, 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true', class: WIDTH[name] ? 'icon icon-thin' : 'icon' },
     ...PATHS[name].map(([tag, attrs]) => svg(tag, attrs)),
   );
 }

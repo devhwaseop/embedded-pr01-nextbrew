@@ -8,6 +8,7 @@
 // 값은 «다음 추출에 쓸 값»(바꾼 뒤의 값)으로 받는다 — 「몇 클릭 굵게」처럼 차이로 받으면 그라인더마다 다이얼 방향이 달라 틀리기 쉽다.
 
 import { readLooseJson, fieldReaders } from './looseJson.js';
+import { n2 } from './schema.js';
 
 export const ADVICE_FORMAT = 'nextbrew-advice';
 export const ADVICE_FORMAT_VERSION = 1;
@@ -107,7 +108,7 @@ export function validateAdvice(raw, { brew = null, now = Date.now() } = {}) {
     }
   }
   if (brew && next.hotWaterG != null && cur.hotWaterG && Math.abs(next.hotWaterG - cur.hotWaterG) / cur.hotWaterG > 0.2) {
-    warn(`next.hotWaterG: 이번 ${cur.hotWaterG}g → ${next.hotWaterG}g 로 20% 넘게 바뀝니다. 값을 확인해 주세요.`);
+    warn(`next.hotWaterG: 이번 ${n2(cur.hotWaterG)}g → ${n2(next.hotWaterG)}g 로 20% 넘게 바뀝니다. 값을 확인해 주세요.`);
   }
   if (rawNext && Object.values(next).every((v) => v == null)) err('next: 값이 하나도 없습니다.');
 
@@ -177,7 +178,50 @@ export function advicePatch(advice, from, { grinderId = null } = {}) {
   return { patch, dialSkipped: n.grindDial != null && !sameGrinder };
 }
 
-// 준비 화면에 띄울 제안: 같은 레시피(원두를 골랐으면 같은 원두)의 가장 최근 «AI 제안이 있는» 기록
+// 준비 화면에 띄울 제안: 같은 레시피(원두를 골랐으면 같은 원두 · 블렌드 템플릿이면 같은 템플릿)의 가장 최근 «AI 제안이 있는» 기록
 export function lastAdvised(brews, { recipeId, beanId = null }) {
-  return brews.find((b) => b.aiAdvice && b.recipe.id === recipeId && (!beanId || b.bean?.id === beanId)) ?? null;
+  return brews.find((b) => b.aiAdvice && b.recipe.id === recipeId && (!beanId || (b.bean?.id ?? b.bean?.blendId) === beanId)) ?? null;
+}
+
+// ── 따른 제안 남기기(9/26 사용자 결정) ─────────────────────────
+// [AI 제안대로 맞추기]를 누르면 준비 화면이 «맞춘 값»을 기억하고, 추출을 시작할 때 새 기록에 남긴다.
+// 제안 원문은 그 기록의 것을 그대로 복사해 둔다(제안이 달린 기록의 제안을 나중에 지우거나 바꿔도 이 기록의 근거는 남는다).
+// 맞춘 뒤 손으로 더 바꾼 칸은 adjusted 에 «맞춘 값 → 실제 값»으로 적는다(사용자 결정: 약간 더 조정해도 차이가 적히게).
+export const FOLLOW_WORDS = NEXT_WORDS;
+
+// 버튼이 넣은 값(패치 → 다음 추출 칸 이름). 물은 비율로 바뀌므로 원두량 × 비율로 세고, 계획(core/recipe.js buildPlan)처럼 g 단위로 반올림한다
+// (그래야 손대지 않은 물이 «바꿈»으로 잡히지 않는다).
+export function appliedValues(patch, draftDoseG) {
+  const out = {};
+  if (patch.dial != null) out.grindDial = patch.dial;
+  if (patch.doseG != null) out.doseG = patch.doseG;
+  if (patch.ratio != null) out.hotWaterG = Math.round((patch.doseG ?? draftDoseG) * patch.ratio);
+  if (patch.tempC != null) out.tempC = patch.tempC;
+  return out;
+}
+
+// 준비 화면이 기억한 것(f) + 추출을 시작할 때의 실제 값 → 기록에 남길 followedAdvice
+export function followRecord(f, actual) {
+  const adjusted = Object.entries(f.applied ?? {})
+    .filter(([k, v]) => v != null && actual[k] != null && n2(actual[k]) !== n2(v))
+    .map(([key, v]) => ({ key, applied: n2(v), actual: n2(actual[key]) }));
+  return {
+    source: 'ai',
+    fromBrewId: f.fromBrewId, // 포인터 — 제안이 달린 기록
+    fromStartedAt: f.fromStartedAt ?? null,
+    advice: f.advice, // 그때의 제안 원문(복사본)
+    applied: f.applied ?? {},
+    dialSkipped: Boolean(f.dialSkipped),
+    adjusted,
+  };
+}
+
+// 기록 화면·공유 글에 쓰는 한 줄들: 「그라인더 표시값 110 (맞춘 뒤 108로 바꿈)」
+export function followLines(fa) {
+  if (!fa) return [];
+  const adj = new Map((fa.adjusted ?? []).map((x) => [x.key, x]));
+  return Object.entries(fa.applied ?? {}).map(([k, v]) => {
+    const a = adj.get(k);
+    return a ? `${NEXT_WORDS[k]} ${n2(v)} → 맞춘 뒤 ${n2(a.actual)}(으)로 바꿈` : `${NEXT_WORDS[k]} ${n2(v)} 그대로`;
+  });
 }

@@ -9,7 +9,7 @@
 //   형식·검사기·프롬프트가 서로 어긋날 수 없게 한다.
 // - 앱이 못 잡는 것: 형식은 맞는데 AI 가 원문 숫자를 잘못 옮긴 경우 → 미리 보기에서 원문과 대조하라고 안내한다.
 
-import { newId } from './schema.js';
+import { n2, newId } from './schema.js';
 
 import { readLooseJson, fieldReaders } from './looseJson.js';
 
@@ -128,7 +128,7 @@ export function validateRecipeImport(raw, { now = Date.now(), existingNames = []
   inRange(iceG, 'iceG(얼음)', 0, 2000, '얼음(g)');
   if (style === 'iced' && !iceG) warn('iceG: 아이스인데 얼음이 0g 입니다. 원문에 얼음 양이 있는지 확인해 주세요.');
   if (style === 'hot' && iceG) {
-    warn(`iceG: 핫 레시피인데 얼음 ${iceG}g 이 있어 0 으로 두었습니다.`);
+    warn(`iceG: 핫 레시피인데 얼음 ${n2(iceG)}g 이 있어 0 으로 두었습니다.`);
     iceG = 0;
   }
   const tempC = inRange(num(raw.tempC, 'tempC'), 'tempC(물 온도)', 50, 100, '물 온도(℃)');
